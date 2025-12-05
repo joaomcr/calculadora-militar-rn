@@ -7,13 +7,27 @@ from leitor_html import extrair_dados_html
 from gerador_pdf import gerar_pdf
 
 st.set_page_config(page_title="Calculadora Militares RN", layout="wide")
-# --- ESCONDER MARCAS DO STREAMLIT ---
+# --- ESCONDER MARCAS DO STREAMLIT (CSS BLINDADO) ---
 hide_st_style = """
             <style>
+            /* Esconde Menu Hambúrguer, Rodapé e Cabeçalho Padrão */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
+            
+            /* Esconde elementos específicos pelo ID interno (Mais forte) */
+            [data-testid="stToolbar"] {visibility: hidden !important;}
+            [data-testid="stDecoration"] {visibility: hidden !important;}
+            [data-testid="stFooter"] {visibility: hidden !important;}
+            [data-testid="stHeader"] {visibility: hidden !important;}
+            
+            /* Esconde o botão de Deploy */
             .stDeployButton {display:none;}
+            
+            /* Remove o espaço em branco extra no topo */
+            .block-container {
+                padding-top: 1rem;
+            }
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
@@ -348,3 +362,4 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
+
