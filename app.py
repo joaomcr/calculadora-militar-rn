@@ -7,7 +7,16 @@ from leitor_html import extrair_dados_html
 from gerador_pdf import gerar_pdf
 
 st.set_page_config(page_title="Calculadora Militares RN", layout="wide")
-
+# --- ESCONDER MARCAS DO STREAMLIT ---
+hide_st_style = """
+            <style>
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            .stDeployButton {display:none;}
+            </style>
+            """
+st.markdown(hide_st_style, unsafe_allow_html=True)
 # --- CABEÇALHO E INTRODUÇÃO ---
 st.title("🛡️ Calculadora de Revisão de Subsídio Militares RN")
 st.markdown("""
@@ -337,4 +346,5 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
     if st.button("🔄 Reiniciar Simulação"):
         for key in list(st.session_state.keys()):
             del st.session_state[key]
+
         st.rerun()
