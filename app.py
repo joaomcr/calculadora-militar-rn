@@ -105,7 +105,7 @@ def inferir_historico_promocoes(df_extraido):
         if patente_identificada and patente_identificada != cargo_atual:
             if cargo_atual is None:
                 data_promo = data_ref
-            else:
+            else:            
                 mes = data_ref.month
                 ano = data_ref.year
                 if mes >= 5 and mes < 9:
@@ -124,7 +124,13 @@ def inferir_historico_promocoes(df_extraido):
 with st.sidebar:
     st.header("⚙️ Parâmetros")
     
-    data_ingresso = st.date_input("Data de Ingresso", value=date(2010, 2, 1), format="DD/MM/YYYY")
+   # --- CORREÇÃO AQUI: ADICIONADO min_value PARA PERMITIR DATAS ANTIGAS ---
+    data_ingresso = st.date_input(
+        "Data de Ingresso", 
+        value=date(2010, 2, 1), 
+        min_value=date(1970, 1, 1), # Permite datas desde 1970
+        format="DD/MM/YYYY"
+    )
     data_ajuizamento = st.date_input("Data Estimada da Ação", value=date.today(), format="DD/MM/YYYY")
     
     st.markdown("---")
@@ -362,4 +368,5 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
+
 
