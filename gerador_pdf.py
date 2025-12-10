@@ -40,7 +40,6 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     estilo_nota = ParagraphStyle('Nota', parent=styles['BodyText'], fontSize=9, leading=10, textColor=colors.grey)
 
     # --- 1. CABEÇALHO ---
-    elementos.append(Paragraph("LAUDO TÉCNICO PERICIAL", estilo_titulo))
     elementos.append(Paragraph("REVISÃO DE SUBSÍDIO - MILITARES RN", estilo_titulo))
     elementos.append(Spacer(1, 0.5*cm))
 
@@ -186,7 +185,7 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     linhas_lei = []
     
     for idx, row in df_tabela_lei.iterrows():
-        norma = row.get('Norma', 'LCE 515/2014')
+        norma = row.get('Norma', 'LCE 514/2014')
         linha = [
             formatar_data(row['Data_Inicio']),
             formatar_data(row['Data_Fim']),
@@ -246,12 +245,13 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     Subtenente e Sargentos conforme estipulado.
     """
     elementos.append(Paragraph(nota_aspirante, estilo_nota))
-
     # --- 9. ASSINATURA ---
-    elementos.append(Spacer(1, 2*cm))
-    elementos.append(Paragraph("_" * 50, ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
-    elementos.append(Paragraph("Responsável Técnico / Calculista", ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
+    # REMOVIDA O CAMPO DE ASSINATURA
+    #elementos.append(Spacer(1, 2*cm))
+    #elementos.append(Paragraph("_" * 50, ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
+    #elementos.append(Paragraph("Responsável Técnico / Calculista", ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
     
     doc.build(elementos)
     buffer.seek(0)
+
     return buffer
