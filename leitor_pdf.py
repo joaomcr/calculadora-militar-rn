@@ -16,112 +16,115 @@ def remover_acentos(texto):
 
 def extrair_dados_pdf(arquivo_pdf):
     """
-    Lê PDF e extrai dados tabulares focando nas colunas especificadas:
-    - Competência: 'Mês/Ano Direito'
-    - Rubrica: 'Rubr'
-    - Valor: 'Valor'
-    - Cargo: 'Descrição do Cargo'
+    Lê PDF e extrai dados tabulares.
+    Detecta automaticamente se as colunas estão separadas ou fundidas (comum em alguns PDFs).
     """
     dados_encontrados = []
     
+    # Regex para o caso de Coluna Fundida (Tudo junto)
+    # Ex: "05/2018 Vantag 355 SUBSIDIO... 4,341.94 106108 ALUNO CFO..."
+    # Grupo 1: Data | Grupo 2: Valor | Grupo 3: Cargo
+    regex_linha_fundida = re.compile(r'(\d{2}/\d{4}).*?\s355\s.*?\s([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+\d+\s+(.*)')
+
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for page in pdf.pages:
-                # 1. Tenta extrair tabelas estruturadas
                 tabelas = page.extract_tables()
                 
                 for tabela in tabelas:
                     if not tabela: continue
                     
-                    # Variáveis de índice das colunas
                     idx_competencia = -1
                     idx_rubrica = -1
                     idx_valor = -1
                     idx_cargo = -1
+                    idx_coluna_fundida = -1
                     
                     header_row = -1
                     
                     # --- A. ENCONTRAR O CABEÇALHO ---
                     for i, row in enumerate(tabela):
-                        # Limpa e normaliza o texto da linha para busca (Remove acentos)
                         row_text = [remover_acentos(cell) if cell else "" for cell in row]
                         
-                        # Verifica se é a linha de cabeçalho baseada nos nomes
+                        # Verifica palavras-chave
                         tem_direito = any("DIREITO" in cell for cell in row_text) or any("COMPET" in cell for cell in row_text)
-                        tem_rubr = any("RUBR" in cell for cell in row_text) or any("CODIGO" in cell for cell in row_text)
-                        tem_valor = any("VALOR" in cell for cell in row_text) or any("RENDIMENTO" in cell for cell in row_text)
+                        tem_rubr = any("RUBR" in cell for cell in row_text)
+                        tem_valor = any("VALOR" in cell for cell in row_text)
                         
-                        if tem_direito and (tem_rubr or tem_valor):
+                        if tem_direito:
                             header_row = i
-                            # Mapeia os índices exatos
+                            
+                            # Tenta mapear colunas separadas
                             for j, cell in enumerate(row_text):
                                 if "DIREITO" in cell or "COMPET" in cell: idx_competencia = j
                                 elif "RUBR" in cell or "CODIGO" in cell: idx_rubrica = j
                                 elif "VALOR" in cell or "RENDIMENTO" in cell: idx_valor = j
-                                # Lista expandida de nomes de cargo
-                                elif ("CARGO" in cell or "FUNCAO" in cell or "POSTO" in cell or 
-                                      "GRADUACAO" in cell or "DESCRICAO" in cell or "CLASSE" in cell): 
-                                    idx_cargo = j
+                                elif "CARGO" in cell or "FUNCAO" in cell or "POSTO" in cell: idx_cargo = j
+                            
+                            # Tenta detectar COLUNA FUNDIDA (Caso do seu PDF)
+                            # Se "DIREITO", "RUBR" e "VALOR" estiverem na MESMA célula
+                            for j, cell in enumerate(row_text):
+                                if "DIREITO" in cell and "RUBR" in cell and "VALOR" in cell:
+                                    idx_coluna_fundida = j
+                                    break
+                            
                             break
                     
-                    # Se não achou cabeçalho nesta tabela, pula para a próxima
-                    if header_row == -1:
-                        continue
-                        
+                    if header_row == -1: continue
+
                     # --- B. EXTRAIR DADOS ---
-                    # Começa a ler da linha seguinte ao cabeçalho
                     for row in tabela[header_row+1:]:
-                        # Verifica se a linha tem tamanho suficiente
-                        if len(row) <= max(idx_competencia, idx_rubrica, idx_valor):
-                            continue
-                            
-                        # Extrai Rubrica
-                        raw_rubrica = str(row[idx_rubrica]) if idx_rubrica != -1 and row[idx_rubrica] else ""
-                        
-                        # FILTRO: Só queremos a Rubrica 355
-                        if "355" in raw_rubrica:
-                            raw_data = row[idx_competencia] if idx_competencia != -1 else ""
-                            raw_valor = row[idx_valor] if idx_valor != -1 else ""
-                            raw_cargo = row[idx_cargo] if idx_cargo != -1 else ""
-                            
-                            # Limpeza e Validação
-                            try:
-                                # 1. Data (MM/AAAA)
-                                match_data = re.search(r'(\d{2}/\d{4})', str(raw_data))
-                                if not match_data: continue
-                                data_final = match_data.group(1)
+                        try:
+                            # MODALIDADE 1: COLUNA FUNDIDA (Seu PDF atual)
+                            if idx_coluna_fundida != -1:
+                                if len(row) <= idx_coluna_fundida: continue
                                 
-                                # 2. Valor (Modo Robusto com Regex)
-                                # Procura o padrão X.XXX,XX dentro da célula, ignorando R$ ou texto ao redor
-                                texto_valor = str(raw_valor)
-                                match_valor = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', texto_valor)
+                                texto_celula = str(row[idx_coluna_fundida]).replace('\n', ' ')
                                 
-                                if match_valor:
-                                    val_str = match_valor.group(1).replace('.', '').replace(',', '.')
+                                # Aplica o Regex para separar o texto
+                                match = regex_linha_fundida.search(texto_celula)
+                                if match:
+                                    data_final = match.group(1)
+                                    val_str = match.group(2).replace('.', '').replace(',', '.')
                                     val_final = float(val_str)
-                                else:
-                                    # Tentativa fallback: remove tudo que não for dígito ou vírgula
-                                    val_limpo = re.sub(r'[^\d,]', '', texto_valor)
-                                    val_str = val_limpo.replace(',', '.')
-                                    val_final = float(val_str) if val_str else 0.0
+                                    cargo_final = remover_acentos(match.group(3)).strip()
+                                    
+                                    dados_encontrados.append({
+                                        'Competencia': data_final,
+                                        'Valor_Achado': val_final,
+                                        'Cargo_Detectado': cargo_final
+                                    })
+                            
+                            # MODALIDADE 2: COLUNAS SEPARADAS (Padrão)
+                            elif idx_competencia != -1 and idx_valor != -1:
+                                if len(row) <= max(idx_competencia, idx_rubrica, idx_valor): continue
                                 
-                                # 3. Cargo (Limpo e Maiúsculo)
-                                cargo_final = remover_acentos(raw_cargo).strip()
+                                raw_rubrica = str(row[idx_rubrica]) if idx_rubrica != -1 and row[idx_rubrica] else ""
                                 
-                                dados_encontrados.append({
-                                    'Competencia': data_final,
-                                    'Valor_Achado': val_final,
-                                    'Cargo_Detectado': cargo_final
-                                })
-                            except:
-                                continue
+                                if "355" in raw_rubrica:
+                                    raw_data = row[idx_competencia]
+                                    raw_valor = row[idx_valor]
+                                    raw_cargo = row[idx_cargo] if idx_cargo != -1 else ""
+                                    
+                                    match_data = re.search(r'(\d{2}/\d{4})', str(raw_data))
+                                    if not match_data: continue
+                                    
+                                    val_str = str(raw_valor).replace('R$', '').replace('.', '').replace(',', '.').strip()
+                                    
+                                    dados_encontrados.append({
+                                        'Competencia': match_data.group(1),
+                                        'Valor_Achado': float(val_str),
+                                        'Cargo_Detectado': remover_acentos(raw_cargo).strip()
+                                    })
+                        except:
+                            continue
 
         # --- C. CONSOLIDAÇÃO ---
         if dados_encontrados:
             df = pd.DataFrame(dados_encontrados)
             df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
             
-            # Soma valores de mesma competência e mantém o primeiro cargo encontrado
+            # Soma valores e pega o primeiro cargo válido
             df = df.groupby('Competencia', as_index=False).agg({
                 'Valor_Achado': 'sum',
                 'Cargo_Detectado': 'first'
@@ -134,3 +137,6 @@ def extrair_dados_pdf(arquivo_pdf):
     except Exception as e:
         st.error(f"Erro ao ler PDF: {e}")
         return pd.DataFrame()
+
+
+
