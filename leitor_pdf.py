@@ -20,7 +20,7 @@ def extrair_dados_pdf(arquivo_pdf):
     - Competência: 'Mês/Ano Direito'
     - Rubrica: 'Rubr'
     - Valor: 'Valor'
-    - Cargo: 'Descrição do Cargo' (Robustecido para pegar variações)
+    - Cargo: 'Descrição do Cargo'
     """
     dados_encontrados = []
     
@@ -47,7 +47,6 @@ def extrair_dados_pdf(arquivo_pdf):
                         row_text = [remover_acentos(cell) if cell else "" for cell in row]
                         
                         # Verifica se é a linha de cabeçalho baseada nos nomes
-                        # Usamos palavras-chave parciais normalizadas
                         tem_direito = any("DIREITO" in cell for cell in row_text) or any("COMPET" in cell for cell in row_text)
                         tem_rubr = any("RUBR" in cell for cell in row_text) or any("CODIGO" in cell for cell in row_text)
                         tem_valor = any("VALOR" in cell for cell in row_text) or any("RENDIMENTO" in cell for cell in row_text)
@@ -83,7 +82,6 @@ def extrair_dados_pdf(arquivo_pdf):
                         if "355" in raw_rubrica:
                             raw_data = row[idx_competencia] if idx_competencia != -1 else ""
                             raw_valor = row[idx_valor] if idx_valor != -1 else ""
-                            # Extrai Cargo
                             raw_cargo = row[idx_cargo] if idx_cargo != -1 else ""
                             
                             # Limpeza e Validação
@@ -93,9 +91,19 @@ def extrair_dados_pdf(arquivo_pdf):
                                 if not match_data: continue
                                 data_final = match_data.group(1)
                                 
-                                # 2. Valor (R$ X.XXX,XX)
-                                val_str = str(raw_valor).replace('R$', '').replace('.', '').replace(',', '.').strip()
-                                val_final = float(val_str)
+                                # 2. Valor (Modo Robusto com Regex)
+                                # Procura o padrão X.XXX,XX dentro da célula, ignorando R$ ou texto ao redor
+                                texto_valor = str(raw_valor)
+                                match_valor = re.search(r'(\d{1,3}(?:\.\d{3})*,\d{2})', texto_valor)
+                                
+                                if match_valor:
+                                    val_str = match_valor.group(1).replace('.', '').replace(',', '.')
+                                    val_final = float(val_str)
+                                else:
+                                    # Tentativa fallback: remove tudo que não for dígito ou vírgula
+                                    val_limpo = re.sub(r'[^\d,]', '', texto_valor)
+                                    val_str = val_limpo.replace(',', '.')
+                                    val_final = float(val_str) if val_str else 0.0
                                 
                                 # 3. Cargo (Limpo e Maiúsculo)
                                 cargo_final = remover_acentos(raw_cargo).strip()
