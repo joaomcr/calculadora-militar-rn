@@ -2,6 +2,17 @@ import pdfplumber
 import pandas as pd
 import streamlit as st
 import re
+import unicodedata
+
+def remover_acentos(texto):
+    """Remove acentos e coloca em maiúsculo (Ex: 'Descrição' -> 'DESCRICAO')"""
+    try:
+        if not texto: return ""
+        nfkd = unicodedata.normalize('NFD', str(texto))
+        sem_acento = "".join([c for c in nfkd if not unicodedata.category(c) == 'Mn'])
+        return sem_acento.upper()
+    except:
+        return str(texto).upper()
 
 def extrair_dados_pdf(arquivo_pdf):
     """
@@ -9,7 +20,7 @@ def extrair_dados_pdf(arquivo_pdf):
     - Competência: 'Mês/Ano Direito'
     - Rubrica: 'Rubr'
     - Valor: 'Valor'
-    - Cargo: 'Descrição do Cargo'
+    - Cargo: 'Descrição do Cargo' (Robustecido para pegar variações)
     """
     dados_encontrados = []
     
@@ -32,13 +43,13 @@ def extrair_dados_pdf(arquivo_pdf):
                     
                     # --- A. ENCONTRAR O CABEÇALHO ---
                     for i, row in enumerate(tabela):
-                        # Limpa e normaliza o texto da linha para busca
-                        row_text = [str(cell).strip().upper() if cell else "" for cell in row]
+                        # Limpa e normaliza o texto da linha para busca (Remove acentos)
+                        row_text = [remover_acentos(cell) if cell else "" for cell in row]
                         
-                        # Verifica se é a linha de cabeçalho baseada nos nomes que você passou
-                        # Usamos palavras-chave parciais para garantir (ex: "DIREITO" pega "Mês/Ano Direito")
+                        # Verifica se é a linha de cabeçalho baseada nos nomes
+                        # Usamos palavras-chave parciais normalizadas
                         tem_direito = any("DIREITO" in cell for cell in row_text) or any("COMPET" in cell for cell in row_text)
-                        tem_rubr = any("RUBR" in cell for cell in row_text) or any("CÓDIGO" in cell for cell in row_text)
+                        tem_rubr = any("RUBR" in cell for cell in row_text) or any("CODIGO" in cell for cell in row_text)
                         tem_valor = any("VALOR" in cell for cell in row_text) or any("RENDIMENTO" in cell for cell in row_text)
                         
                         if tem_direito and (tem_rubr or tem_valor):
@@ -48,7 +59,10 @@ def extrair_dados_pdf(arquivo_pdf):
                                 if "DIREITO" in cell or "COMPET" in cell: idx_competencia = j
                                 elif "RUBR" in cell or "CODIGO" in cell: idx_rubrica = j
                                 elif "VALOR" in cell or "RENDIMENTO" in cell: idx_valor = j
-                                elif "CARGO" in cell or "FUNÇÃO" in cell or "DESCRIÇÃO" in cell: idx_cargo = j
+                                # Lista expandida de nomes de cargo
+                                elif ("CARGO" in cell or "FUNCAO" in cell or "POSTO" in cell or 
+                                      "GRADUACAO" in cell or "DESCRICAO" in cell or "CLASSE" in cell): 
+                                    idx_cargo = j
                             break
                     
                     # Se não achou cabeçalho nesta tabela, pula para a próxima
@@ -69,6 +83,7 @@ def extrair_dados_pdf(arquivo_pdf):
                         if "355" in raw_rubrica:
                             raw_data = row[idx_competencia] if idx_competencia != -1 else ""
                             raw_valor = row[idx_valor] if idx_valor != -1 else ""
+                            # Extrai Cargo
                             raw_cargo = row[idx_cargo] if idx_cargo != -1 else ""
                             
                             # Limpeza e Validação
@@ -82,8 +97,8 @@ def extrair_dados_pdf(arquivo_pdf):
                                 val_str = str(raw_valor).replace('R$', '').replace('.', '').replace(',', '.').strip()
                                 val_final = float(val_str)
                                 
-                                # 3. Cargo
-                                cargo_final = str(raw_cargo).strip().upper()
+                                # 3. Cargo (Limpo e Maiúsculo)
+                                cargo_final = remover_acentos(raw_cargo).strip()
                                 
                                 dados_encontrados.append({
                                     'Competencia': data_final,
@@ -98,7 +113,7 @@ def extrair_dados_pdf(arquivo_pdf):
             df = pd.DataFrame(dados_encontrados)
             df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
             
-            # Soma valores de mesma competência e mantém o cargo
+            # Soma valores de mesma competência e mantém o primeiro cargo encontrado
             df = df.groupby('Competencia', as_index=False).agg({
                 'Valor_Achado': 'sum',
                 'Cargo_Detectado': 'first'
