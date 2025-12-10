@@ -1,76 +1,113 @@
 import pdfplumber
-import re
 import pandas as pd
 import streamlit as st
+import re
 
 def extrair_dados_pdf(arquivo_pdf):
     """
-    Lê PDF do Portal do Servidor RN e extrai (Data, Valor).
-    Filtra pela Rubrica 355 (Subsídio) ou pela palavra chave.
+    Lê PDF e extrai dados tabulares focando nas colunas especificadas:
+    - Competência: 'Mês/Ano Direito'
+    - Rubrica: 'Rubr'
+    - Valor: 'Valor'
+    - Cargo: 'Descrição do Cargo'
     """
     dados_encontrados = []
     
-    # 1. Regex para Data (MM/AAAA)
-    regex_data = re.compile(r'(\d{2}/\d{4})') 
-    
-    # 2. Regex para Dinheiro (Captura o que vem depois de R$)
-    # Nota: No seu PDF o R$ tem um espaço depois. Ex: "R$ 6.112,02"
-    regex_valor = re.compile(r'R\$\s+(\d{1,3}(?:\.\d{3})*,\d{2})')
-
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
-            if not pdf.pages:
-                return pd.DataFrame()
-
             for page in pdf.pages:
-                text = page.extract_text()
-                if not text:
-                    continue
-
-                for linha in text.split('\n'):
+                # 1. Tenta extrair tabelas estruturadas
+                tabelas = page.extract_tables()
+                
+                for tabela in tabelas:
+                    if not tabela: continue
                     
-                    # --- FILTRO HÍBRIDO (RUBRICA 355 + PALAVRA CHAVE) ---
-                    # Verifica se é uma linha de Vantagem (Crédito)
-                    eh_vantagem = "Vantagem" in linha
+                    # Variáveis de índice das colunas
+                    idx_competencia = -1
+                    idx_rubrica = -1
+                    idx_valor = -1
+                    idx_cargo = -1
                     
-                    # Verifica se é o código 355 ou a palavra SUBSIDIO
-                    # Colocamos espaços em volta do " 355 " para não confundir com R$ 355,00
-                    tem_rubrica = " 355 " in linha
-                    tem_palavra = "SUBSIDIO" in linha or "SUBSÍDIO" in linha
+                    header_row = -1
                     
-                    # A Lógica: Tem que ser Vantagem E (Ter o código OU a palavra)
-                    if eh_vantagem and (tem_rubrica or tem_palavra):
+                    # --- A. ENCONTRAR O CABEÇALHO ---
+                    for i, row in enumerate(tabela):
+                        # Limpa e normaliza o texto da linha para busca
+                        row_text = [str(cell).strip().upper() if cell else "" for cell in row]
                         
-                        match_data = regex_data.search(linha)
-                        match_valor = regex_valor.search(linha)
+                        # Verifica se é a linha de cabeçalho baseada nos nomes que você passou
+                        # Usamos palavras-chave parciais para garantir (ex: "DIREITO" pega "Mês/Ano Direito")
+                        tem_direito = any("DIREITO" in cell for cell in row_text) or any("COMPET" in cell for cell in row_text)
+                        tem_rubr = any("RUBR" in cell for cell in row_text) or any("CÓDIGO" in cell for cell in row_text)
+                        tem_valor = any("VALOR" in cell for cell in row_text) or any("RENDIMENTO" in cell for cell in row_text)
                         
-                        if match_data and match_valor:
-                            data_str = match_data.group(1)
-                            valor_str = match_valor.group(1)
+                        if tem_direito and (tem_rubr or tem_valor):
+                            header_row = i
+                            # Mapeia os índices exatos
+                            for j, cell in enumerate(row_text):
+                                if "DIREITO" in cell or "COMPET" in cell: idx_competencia = j
+                                elif "RUBR" in cell or "CODIGO" in cell: idx_rubrica = j
+                                elif "VALOR" in cell or "RENDIMENTO" in cell: idx_valor = j
+                                elif "CARGO" in cell or "FUNÇÃO" in cell or "DESCRIÇÃO" in cell: idx_cargo = j
+                            break
+                    
+                    # Se não achou cabeçalho nesta tabela, pula para a próxima
+                    if header_row == -1:
+                        continue
+                        
+                    # --- B. EXTRAIR DADOS ---
+                    # Começa a ler da linha seguinte ao cabeçalho
+                    for row in tabela[header_row+1:]:
+                        # Verifica se a linha tem tamanho suficiente
+                        if len(row) <= max(idx_competencia, idx_rubrica, idx_valor):
+                            continue
                             
+                        # Extrai Rubrica
+                        raw_rubrica = str(row[idx_rubrica]) if idx_rubrica != -1 and row[idx_rubrica] else ""
+                        
+                        # FILTRO: Só queremos a Rubrica 355
+                        if "355" in raw_rubrica:
+                            raw_data = row[idx_competencia] if idx_competencia != -1 else ""
+                            raw_valor = row[idx_valor] if idx_valor != -1 else ""
+                            raw_cargo = row[idx_cargo] if idx_cargo != -1 else ""
+                            
+                            # Limpeza e Validação
                             try:
-                                # Limpa o valor para virar número float
-                                valor_limpo = float(valor_str.replace('.', '').replace(',', '.'))
+                                # 1. Data (MM/AAAA)
+                                match_data = re.search(r'(\d{2}/\d{4})', str(raw_data))
+                                if not match_data: continue
+                                data_final = match_data.group(1)
+                                
+                                # 2. Valor (R$ X.XXX,XX)
+                                val_str = str(raw_valor).replace('R$', '').replace('.', '').replace(',', '.').strip()
+                                val_final = float(val_str)
+                                
+                                # 3. Cargo
+                                cargo_final = str(raw_cargo).strip().upper()
                                 
                                 dados_encontrados.append({
-                                    'Competencia': data_str,
-                                    'Valor_Achado': valor_limpo
+                                    'Competencia': data_final,
+                                    'Valor_Achado': val_final,
+                                    'Cargo_Detectado': cargo_final
                                 })
                             except:
                                 continue
 
-        # Consolidação
+        # --- C. CONSOLIDAÇÃO ---
         if dados_encontrados:
             df = pd.DataFrame(dados_encontrados)
             df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
             
-            # Soma valores se houver duplicidade no mesmo mês
-            df = df.groupby('Competencia', as_index=False)['Valor_Achado'].sum()
+            # Soma valores de mesma competência e mantém o cargo
+            df = df.groupby('Competencia', as_index=False).agg({
+                'Valor_Achado': 'sum',
+                'Cargo_Detectado': 'first'
+            })
+            return df.sort_values('Competencia')
             
-            return df
         else:
             return pd.DataFrame()
 
     except Exception as e:
-        st.error(f"Erro na leitura do PDF: {e}")
+        st.error(f"Erro ao ler PDF: {e}")
         return pd.DataFrame()
