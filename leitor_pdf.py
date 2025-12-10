@@ -16,22 +16,47 @@ def remover_acentos(texto):
 
 def limpar_dinheiro_inteligente(valor_str):
     """
-    Detecta se o formato é BR (1.000,00) ou US (1,000.00) e converte para float.
+    Converte string de dinheiro para float detectando automaticamente o formato (BR ou US).
+    Usa a lógica do 'último separador' para decidir qual é o decimal.
     """
     if not valor_str: return 0.0
     
-    # Remove espaços e símbolos de moeda
-    v = valor_str.replace('R$', '').strip()
+    # Limpa sujeira básica
+    v = valor_str.replace('R$', '').replace(' ', '').strip()
     
-    # Se tiver vírgula no final (ex: 1.000,00), é BR
-    if ',' in v and ('.' not in v or v.find('.') < v.find(',')):
-        # Remove ponto de milhar, troca vírgula por ponto
-        v = v.replace('.', '').replace(',', '.')
-    # Se tiver ponto no final (ex: 1,000.00), é US
-    elif '.' in v and (',' not in v or v.find(',') < v.find('.')):
-        # Remove vírgula de milhar
-        v = v.replace(',', '')
+    # Encontra posições dos separadores
+    last_comma = v.rfind(',')
+    last_dot = v.rfind('.')
     
+    # Cenário 1: Não tem separadores (ex: "1000")
+    if last_comma == -1 and last_dot == -1:
+        pass # Já está pronto para converter
+
+    # Cenário 2: Tem vírgula e ponto (ex: "1.000,00" ou "1,000.00")
+    elif last_comma != -1 and last_dot != -1:
+        if last_comma > last_dot: # Formato BR (1.000,00)
+            v = v.replace('.', '').replace(',', '.')
+        else: # Formato US (1,000.00)
+            v = v.replace(',', '')
+
+    # Cenário 3: Só tem ponto (ex: "1000.00" ou "1.000")
+    elif last_dot != -1:
+        # Se tem 3 casas decimais (ex: 1.000), assumimos que é milhar BR
+        if len(v) - last_dot - 1 == 3:
+             v = v.replace('.', '')
+        # Caso contrário (ex: 1000.00 ou 10.00), assumimos decimal
+        else:
+             pass # Python entende ponto como decimal nativamente
+
+    # Cenário 4: Só tem vírgula (ex: "1000,00" ou "1,000")
+    elif last_comma != -1:
+        # Se tem 3 casas (ex: 1,000), assumimos milhar US
+        if len(v) - last_comma - 1 == 3:
+             v = v.replace(',', '')
+        # Caso contrário (ex: 1000,50), assumimos decimal BR
+        else:
+             v = v.replace(',', '.')
+
     try:
         return float(v)
     except:
@@ -44,9 +69,10 @@ def extrair_dados_pdf(arquivo_pdf):
     """
     dados_encontrados = []
     
-    # Regex para Coluna Fundida (Ajustado para ser mais tolerante)
-    # Procura: Data ... 355 ... Valor ... (Cargo Opcional)
-    regex_linha_fundida = re.compile(r'(\d{2}/\d{4}).*?\b355\b.*?([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(\d+)?\s*(.*)')
+    # Regex Simplificado: Foca em achar Data, 355 e Valor.
+    # O resto (cargo) pegamos de forma mais solta no final.
+    # Ex: "05/2018 ... 355 ... 4,341.94 ..."
+    regex_linha_fundida = re.compile(r'(\d{2}/\d{4}).*?\b355\b.*?([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})(.*)')
 
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
@@ -81,7 +107,6 @@ def extrair_dados_pdf(arquivo_pdf):
                                 elif "CARGO" in cell or "FUNCAO" in cell or "POSTO" in cell: idx_cargo = j
                             
                             # 2. Tenta detectar COLUNA FUNDIDA
-                            # Se "DIREITO", "RUBR" e "VALOR" estiverem na MESMA célula
                             for j, cell in enumerate(row_text):
                                 if "DIREITO" in cell and "RUBR" in cell and "VALOR" in cell:
                                     idx_coluna_fundida = j
@@ -97,15 +122,18 @@ def extrair_dados_pdf(arquivo_pdf):
                             if idx_coluna_fundida != -1:
                                 if len(row) <= idx_coluna_fundida: continue
                                 
-                                # Limpa quebras de linha que atrapalham o regex
                                 texto_celula = str(row[idx_coluna_fundida]).replace('\n', ' ').strip()
                                 
                                 match = regex_linha_fundida.search(texto_celula)
                                 if match:
                                     data_final = match.group(1)
                                     val_final = limpar_dinheiro_inteligente(match.group(2))
-                                    # Pega o cargo (Grupo 4 se existir, senão vazio)
-                                    cargo_final = remover_acentos(match.group(4) if match.group(4) else "").strip()
+                                    
+                                    # Tenta limpar o cargo do resto da string
+                                    resto = match.group(3)
+                                    # Remove números soltos (código do cargo) e caracteres estranhos
+                                    cargo_sujo = re.sub(r'\d+', '', resto) 
+                                    cargo_final = remover_acentos(cargo_sujo).strip()
                                     
                                     if val_final > 0:
                                         dados_encontrados.append({
@@ -157,5 +185,3 @@ def extrair_dados_pdf(arquivo_pdf):
     except Exception as e:
         st.error(f"Erro ao ler PDF: {e}")
         return pd.DataFrame()
-
-
