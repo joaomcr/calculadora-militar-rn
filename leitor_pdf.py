@@ -5,39 +5,46 @@ import re
 import unicodedata
 
 def remover_acentos(texto):
-    """Remove acentos e coloca em maiúsculo e remove quebras de linha"""
+    """Remove acentos, coloca em maiúsculo e substitui quebras de linha por espaços"""
     try:
         if not texto: return ""
-        # Remove quebras de linha para facilitar regex
-        texto = str(texto).replace('\n', ' ').replace('\r', '')
-        # Normaliza
-        nfkd = unicodedata.normalize('NFD', texto)
+        # Remove quebras de linha
+        t = str(texto).replace('\n', ' ').replace('\r', ' ')
+        # Normaliza unicode
+        nfkd = unicodedata.normalize('NFD', t)
         sem_acento = "".join([c for c in nfkd if not unicodedata.category(c) == 'Mn'])
-        # Remove espaços duplos
+        # Remove espaços duplos criados
         return re.sub(r'\s+', ' ', sem_acento.upper()).strip()
     except:
         return str(texto).upper()
 
 def limpar_dinheiro_inteligente(valor_str):
     """
-    Converte string de dinheiro para float detectando automaticamente o formato (BR ou US).
+    Converte string para float detectando formato BR (1.000,00) ou US (1,000.00).
     """
     if not valor_str: return 0.0
     
-    v = valor_str.replace('R$', '').strip()
+    # Remove R$ e espaços
+    v = valor_str.replace('R$', '').replace(' ', '').strip()
     
+    # Detecção por posição do último separador
     last_comma = v.rfind(',')
     last_dot = v.rfind('.')
     
+    # Lógica de decisão
     if last_comma != -1 and last_dot != -1:
-        if last_comma > last_dot: # BR 1.000,00
+        if last_comma > last_dot: # BR (1.000,00)
             v = v.replace('.', '').replace(',', '.')
-        else: # US 1,000.00
+        else: # US (1,000.00)
             v = v.replace(',', '')
-    elif last_dot != -1: # 1000.00
+    elif last_dot != -1: # Só ponto (1000.00 ou 1.000)
+        # Se tem 3 casas após o ponto, assume milhar (US) -> remove ponto
         if len(v) - last_dot - 1 == 3: v = v.replace('.', '')
-    elif last_comma != -1: # 1000,00
+        # Caso contrário, assume decimal
+    elif last_comma != -1: # Só vírgula (1000,00 ou 1,000)
+        # Se tem 3 casas, assume milhar (US antigo ou erro) -> remove vírgula
         if len(v) - last_comma - 1 == 3: v = v.replace(',', '')
+        # Caso contrário, assume decimal (BR)
         else: v = v.replace(',', '.')
 
     try:
@@ -45,95 +52,107 @@ def limpar_dinheiro_inteligente(valor_str):
     except:
         return 0.0
 
+def limpar_cargo(texto):
+    """
+    Limpa o texto do cargo:
+    1. Remove código numérico inicial (ex: 106108)
+    2. Corta no hífen para remover corporação/jornada (ex: - PM/CBM)
+    """
+    if not texto: return ""
+    
+    # Remove código numérico no início (sequência de digitos seguida de espaço)
+    texto = re.sub(r'^\s*\d+\s+', '', texto)
+    
+    # Corta no primeiro hífen
+    if '-' in texto:
+        texto = texto.split('-')[0]
+        
+    return texto.strip()
+
 def extrair_dados_pdf(arquivo_pdf):
     """
-    Lê PDF com Estratégia Dupla: Tabela Fundida ou Texto Corrido.
-    Focado no padrão: Data ... 355 ... Valor ... Cargo
+    Lê PDF e extrai dados.
+    Estratégia: Varredura inteligente em tabelas e texto.
     """
     dados_encontrados = []
     
-    # Regex Poderoso: Pega Data, Valor e o resto (Cargo)
-    # Ex: 05/2018 ... 355 ... 4,341.94 ... ALUNO CFO
-    regex_padrao = re.compile(r'(\d{2}/\d{4}).*?\b355\b.*?([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})(.*)')
+    # Regex Universal:
+    # 1. Data (MM/AAAA)
+    # 2. Texto qualquer até achar 355 (Rubrica)
+    # 3. Valor OBRIGATÓRIO ter decimal
+    # 4. Resto (Cargo)
+    regex_universal = re.compile(r'(\d{2}/\d{4}).*?355.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
 
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for page in pdf.pages:
                 
-                # --- ESTRATÉGIA A: TABELAS (Ideal para quando o PDF é bem estruturado) ---
+                # --- ESTRATÉGIA A: VARREDURA EM TABELAS ---
                 tabelas = page.extract_tables()
                 
                 for tabela in tabelas:
                     if not tabela: continue
                     
-                    # Procura coluna fundida (Tudo numa célula só)
-                    idx_coluna_fundida = -1
-                    
-                    # Acha cabeçalho
-                    for i, row in enumerate(tabela):
-                        # Junta todo o texto da linha para procurar palavras chaves
-                        linha_str = " ".join([remover_acentos(c) for c in row if c])
-                        
-                        if "DIREITO" in linha_str and "RUBR" in linha_str and "VALOR" in linha_str:
-                            # Descobre qual índice tem o texto longo
-                            for j, cell in enumerate(row):
-                                c_text = remover_acentos(cell)
-                                if "DIREITO" in c_text and "VALOR" in c_text:
-                                    idx_coluna_fundida = j
-                                    break
-                            break
-                    
-                    # Se achou coluna fundida, processa
-                    if idx_coluna_fundida != -1:
-                        for row in tabela:
-                            if len(row) <= idx_coluna_fundida: continue
+                    # Varre todas as células
+                    for row in tabela:
+                        for cell in row:
+                            if not cell: continue
                             
-                            # Limpa muito bem a célula (tira \n, espaços)
-                            texto_celula = remover_acentos(row[idx_coluna_fundida])
+                            texto_limpo = remover_acentos(cell)
                             
-                            match = regex_padrao.search(texto_celula)
-                            if match:
-                                val = limpar_dinheiro_inteligente(match.group(2))
-                                if val > 0:
-                                    # Limpa o cargo (remove numeros do codigo)
-                                    cargo = re.sub(r'\d+', '', match.group(3)).strip()
+                            is_subsidio = "SUBSIDIO" in texto_limpo or "VANTAG" in texto_limpo
+                            match = regex_universal.search(texto_limpo)
+                            
+                            if match and is_subsidio:
+                                data_str = match.group(1)
+                                valor_str = match.group(2)
+                                cargo_str = match.group(3)
+                                
+                                val_final = limpar_dinheiro_inteligente(valor_str)
+                                
+                                if val_final > 0:
+                                    # Limpa o cargo usando a nova função
+                                    cargo_final = limpar_cargo(cargo_str)
                                     
-                                    dados_encontrados.append({
-                                        'Competencia': match.group(1),
-                                        'Valor_Achado': val,
-                                        'Cargo_Detectado': cargo
-                                    })
-                                    continue # Achou, vai pra proxima linha
-
-                # --- ESTRATÉGIA B: TEXTO CORRIDO (Salva-vidas se a tabela falhar) ---
-                # Se não achou nada na tabela, tenta ler o texto da página linha a linha
-                texto_pagina = page.extract_text()
-                if texto_pagina:
-                    for linha in texto_pagina.split('\n'):
-                        linha_limpa = remover_acentos(linha)
-                        
-                        # Filtra linhas de interesse
-                        if "355" in linha_limpa and ("SUBSIDIO" in linha_limpa or "VANTAGEM" in linha_limpa):
-                            match = regex_padrao.search(linha_limpa)
-                            if match:
-                                # Verifica se não é duplicata (mesmo mês já pego na tabela)
-                                data_atual = match.group(1)
-                                if not any(d['Competencia'] == data_atual for d in dados_encontrados):
-                                    val = limpar_dinheiro_inteligente(match.group(2))
-                                    if val > 0:
-                                        cargo = re.sub(r'\d+', '', match.group(3)).strip()
+                                    if not any(d['Competencia'] == data_str and d['Valor_Achado'] == val_final for d in dados_encontrados):
                                         dados_encontrados.append({
-                                            'Competencia': data_atual,
-                                            'Valor_Achado': val,
-                                            'Cargo_Detectado': cargo
+                                            'Competencia': data_str,
+                                            'Valor_Achado': val_final,
+                                            'Cargo_Detectado': cargo_final
                                         })
+
+                # --- ESTRATÉGIA B: TEXTO CORRIDO (Fallback) ---
+                if True: # Executa sempre para garantir
+                    texto_pagina = page.extract_text()
+                    if texto_pagina:
+                        for linha in texto_pagina.split('\n'):
+                            linha_limpa = remover_acentos(linha)
+                            
+                            if "355" in linha_limpa and ("SUBSIDIO" in linha_limpa or "VANTAG" in linha_limpa):
+                                match = regex_universal.search(linha_limpa)
+                                if match:
+                                    data_str = match.group(1)
+                                    valor_str = match.group(2)
+                                    cargo_str = match.group(3)
+                                    
+                                    val_final = limpar_dinheiro_inteligente(valor_str)
+                                    
+                                    if val_final > 10: 
+                                        # Limpa o cargo
+                                        cargo_final = limpar_cargo(cargo_str)
+                                        
+                                        if not any(d['Competencia'] == data_str for d in dados_encontrados):
+                                            dados_encontrados.append({
+                                                'Competencia': data_str,
+                                                'Valor_Achado': val_final,
+                                                'Cargo_Detectado': cargo_final
+                                            })
 
         # --- CONSOLIDAÇÃO ---
         if dados_encontrados:
             df = pd.DataFrame(dados_encontrados)
             df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
             
-            # Soma valores de mesma competência
             df = df.groupby('Competencia', as_index=False).agg({
                 'Valor_Achado': 'sum',
                 'Cargo_Detectado': 'first'
@@ -145,3 +164,4 @@ def extrair_dados_pdf(arquivo_pdf):
     except Exception as e:
         st.error(f"Erro ao ler PDF: {e}")
         return pd.DataFrame()
+
