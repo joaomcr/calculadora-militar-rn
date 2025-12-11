@@ -1,174 +1,126 @@
 import streamlit as st
 import pandas as pd
 from datetime import date
+import json
 from core import CalculadoraMilitar
 from leitor_pdf import extrair_dados_pdf
 from leitor_html import extrair_dados_html
+from leitor_csv import extrair_dados_csv
 from gerador_pdf import gerar_pdf
 
 st.set_page_config(page_title="Calculadora Militares RN", layout="wide")
-# --- ESCONDER MARCAS DO STREAMLIT (CSS BLINDADO) ---
+
+# --- CONFIGURAÇÃO VISUAL ---
 hide_st_style = """
             <style>
-            /* Esconde Menu Hambúrguer, Rodapé e Cabeçalho Padrão */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
-            
-            /* Esconde elementos específicos pelo ID interno (Mais forte) */
             [data-testid="stToolbar"] {visibility: hidden !important;}
             [data-testid="stDecoration"] {visibility: hidden !important;}
             [data-testid="stFooter"] {visibility: hidden !important;}
-            [data-testid="stHeader"] {visibility: hidden !important;}
-            
-            /* Esconde o botão de Deploy */
-            .stDeployButton {display:none;}
-            
-            /* Remove o espaço em branco extra no topo */
-            .block-container {
-                padding-top: 1rem;
-            }
+            .block-container {padding-top: 2rem;}
             </style>
             """
 st.markdown(hide_st_style, unsafe_allow_html=True)
-# --- CABEÇALHO E INTRODUÇÃO ---
+
+# --- CABEÇALHO ---
 st.title("🛡️ Calculadora de Revisão de Subsídio Militares RN")
 st.markdown("""
 Esta ferramenta simula os valores a receber decorrentes da correção do escalonamento vertical e progressão de níveis.
-Siga os passos numerados abaixo para realizar sua simulação.
 """)
 
-# --- INSTRUÇÕES DO PORTAL (EXPANDER) ---
-with st.expander("ℹ️ **COMO CONSEGUIR SUA FICHA FINANCEIRA (Passo a Passo)**", expanded=False):
-    st.markdown("""
-    Para preencher os dados automaticamente, recomendamos usar a **Ficha Financeira em HTML**:
-    
-    1. Acesse o **[Portal do Servidor do RN](https://portaldoservidor.rn.gov.br/)** e faça login.
-    2. Vá até a seção **Ficha Financeira**.
-    3. Gere a ficha do período completo (ex: de 2014 até hoje).
-    4. **DICA DE OURO:** Na tela onde aparece a ficha, clique com o **botão direito do mouse** e selecione **"Salvar como..."** (ou `Ctrl + S`).
-    5. Salve o arquivo no seu computador (verifique se o tipo é "Página da Web" ou HTML).
-    6. Arraste esse arquivo para o campo de upload na barra lateral esquerda deste site.
-    """)
-
-st.markdown("---")
-
-# --- FUNÇÃO DE INTELIGÊNCIA: DETECTAR PROMOÇÕES ---
+# --- FUNÇÃO DE INTELIGÊNCIA ---
 def inferir_historico_promocoes(df_extraido):
-    """
-    Analisa a coluna 'Cargo_Detectado' e cria o histórico baseado nas datas fixas.
-    Datas RN: 21/04, 21/08, 25/12.
-    """
     historico = []
-    
     mapa_patentes = {
-        # --- OFICIAIS ---
-        "CORONEL": "Coronel", "CEL": "Coronel",
-        "TENENTE CORONEL": "Tenente-Coronel", "TENENTE-CORONEL": "Tenente-Coronel", "TC": "Tenente-Coronel",
-        "MAJOR": "Major", "MAJ": "Major",
-        "CAPITÃO": "Capitão", "CAPITAO": "Capitão", "CAP": "Capitão",
-        
-        # Variações de Tenente
-        "PRIMEIRO TENENTE": "1º Tenente", "1º TEN": "1º Tenente", "1 TEN": "1º Tenente",
-        "SEGUNDO TENENTE": "2º Tenente", "2º TEN": "2º Tenente", "2 TEN": "2º Tenente",
-        "ASPIRANTE": "Aspirante", "ASP": "Aspirante",
-        "ALUNO": "Aluno CFO 1",
-        
-        # --- PRAÇAS ---
-        "SUBTENENTE": "Subtenente", "SUB": "Subtenente", "ST": "Subtenente",
-        
-        # Variações de Sargento
-        "PRIMEIRO SARGENTO": "1º Sargento", "1º SGT": "1º Sargento", "1 SGT": "1º Sargento",
-        "SEGUNDO SARGENTO": "2º Sargento", "2º SGT": "2º Sargento", "2 SGT": "2º Sargento",
-        "TERCEIRO SARGENTO": "3º Sargento", "3º SGT": "3º Sargento", "3 SGT": "3º Sargento",
-        
-        # Cabos e Soldados
-        "CABO": "Cabo", "CB": "Cabo",
-        "SOLDADO": "Soldado", "SD": "Soldado", "SD.": "Soldado"
+        "CORONEL": "Coronel", "CEL": "Coronel", "TC": "Tenente-Coronel", 
+        "MAJOR": "Major", "CAPITÃO": "Capitão", "CAP": "Capitão",
+        "PRIMEIRO TENENTE": "1º Tenente", "1º TEN": "1º Tenente",
+        "SEGUNDO TENENTE": "2º Tenente", "2º TEN": "2º Tenente",
+        "ASPIRANTE": "Aspirante", "ASP": "Aspirante", "ALUNO": "Aluno CFO 1",
+        "SUBTENENTE": "Subtenente", "SUB": "Subtenente", 
+        "PRIMEIRO SARGENTO": "1º Sargento", "1º SGT": "1º Sargento",
+        "SEGUNDO SARGENTO": "2º Sargento", "2º SGT": "2º Sargento",
+        "TERCEIRO SARGENTO": "3º Sargento", "3º SGT": "3º Sargento",
+        "CABO": "Cabo", "CB": "Cabo", "SOLDADO": "Soldado", "SD": "Soldado"
     }
-
-    cargo_atual = None
     
-    # Remove duplicatas de meses e ordena
+    cargo_atual = None
     df_unico = df_extraido.drop_duplicates(subset=['Competencia'], keep='first').sort_values('Competencia')
 
     for index, row in df_unico.iterrows():
-        texto_cargo_html = str(row.get('Cargo_Detectado', '')).upper()
+        texto_cargo = str(row.get('Cargo_Detectado', '')).upper()
         data_ref = row['Competencia']
-        
         patente_identificada = None
-        for sigla, nome_sistema in mapa_patentes.items():
-            if sigla in texto_cargo_html:
-                patente_identificada = nome_sistema
+        
+        for sigla, nome in mapa_patentes.items():
+            if sigla in texto_cargo:
+                patente_identificada = nome
                 break
         
         if patente_identificada and patente_identificada != cargo_atual:
-            if cargo_atual is None:
-                data_promo = data_ref
-            else:            
-                mes = data_ref.month
-                ano = data_ref.year
-                if mes >= 5 and mes < 9:
-                    data_promo = date(ano, 4, 21)
-                elif mes >= 9 and mes <= 12:
-                    data_promo = date(ano, 8, 21)
-                else: 
-                    data_promo = date(ano - 1, 12, 25)
+            if cargo_atual is None: data_promo = data_ref
+            else:
+                mes, ano = data_ref.month, data_ref.year
+                if 5 <= mes < 9: data_promo = date(ano, 4, 21)
+                elif 9 <= mes <= 12: data_promo = date(ano, 8, 21)
+                else: data_promo = date(ano - 1, 12, 25)
             
             historico.append({"Data": data_promo, "Posto": patente_identificada})
             cargo_atual = patente_identificada
             
     return pd.DataFrame(historico)
 
-# --- 1. SIDEBAR (CONFIGURAÇÕES) ---
+# --- 1. SIDEBAR ---
 with st.sidebar:
     st.header("⚙️ Parâmetros")
-    
-   # --- CORREÇÃO AQUI: ADICIONADO min_value PARA PERMITIR DATAS ANTIGAS ---
-    data_ingresso = st.date_input(
-        "Data de Ingresso", 
-        value=date(2010, 2, 1), 
-        min_value=date(1970, 1, 1), # Permite datas desde 1970
-        format="DD/MM/YYYY"
-    )
-    data_ajuizamento = st.date_input("Data Estimada da Ação", value=date.today(), format="DD/MM/YYYY")
+    data_ingresso = st.date_input("Data de Ingresso", value=date(2010, 2, 1), min_value=date(1970, 1, 1), format="DD/MM/YYYY")
+    data_ajuizamento = st.date_input("Data da Ação", value=date.today(), min_value=date(2000, 1, 1), format="DD/MM/YYYY")
     
     st.markdown("---")
-    st.header("📂 Automação (Opcional)")
-    st.markdown("Para preencher histórico e valores automaticamente:")
-    arquivo_upload = st.file_uploader("Subir Ficha (HTML ou PDF)", type=["html", "htm", "pdf"])
+    st.header("📂 Importação de Dados")
+    
+    csv_modelo = "Competencia;Valor;Cargo\n01/01/2018;4500,00;ALUNO CFO\n01/02/2018;4500,00;ALUNO CFO"
+    st.download_button(
+        label="📥 Baixar Modelo de Planilha (.csv)",
+        data=csv_modelo,
+        file_name="modelo_importacao.csv",
+        mime="text/csv",
+        help="Baixe este arquivo, preencha no Excel e suba aqui para garantir 100% de precisão."
+    )
+    
+    st.markdown("---")
+    arquivo_upload = st.file_uploader("Subir Ficha (HTML, PDF ou CSV)", type=["html", "htm", "pdf", "csv"])
 
 # --- PROCESSAMENTO DO ARQUIVO ---
-# Controle de estado para processar arquivo apenas uma vez
-if 'ultimo_arquivo_id' not in st.session_state:
-    st.session_state['ultimo_arquivo_id'] = ""
-
+if 'ultimo_arquivo_id' not in st.session_state: st.session_state['ultimo_arquivo_id'] = ""
 df_importado = pd.DataFrame()
 
 if arquivo_upload:
     arquivo_atual_id = f"{arquivo_upload.name}_{arquivo_upload.size}"
     
-    # Se o arquivo mudou, processa e atualiza histórico
     if arquivo_atual_id != st.session_state['ultimo_arquivo_id']:
         try:
-            if arquivo_upload.name.lower().endswith('.pdf'):
+            # --- SELETOR DE LEITURA ---
+            if arquivo_upload.name.lower().endswith('.csv'):
+                df_importado = extrair_dados_csv(arquivo_upload) 
+            elif arquivo_upload.name.lower().endswith('.pdf'):
                 df_importado = extrair_dados_pdf(arquivo_upload)
             else:
                 html_content = arquivo_upload.getvalue().decode("utf-8", errors='ignore')
                 df_importado = extrair_dados_html(html_content)
                 
             if not df_importado.empty:
-                st.sidebar.success(f"Arquivo lido! {len(df_importado)} meses.")
+                st.sidebar.success(f"Arquivo lido! {len(df_importado)} registros.")
+                st.session_state.df_importado = df_importado # Salva na sessão
                 
-                # Auto-preenchimento do histórico
                 if 'Cargo_Detectado' in df_importado.columns:
                     df_historico_auto = inferir_historico_promocoes(df_importado)
                     if not df_historico_auto.empty:
                         df_historico_auto["Data"] = pd.to_datetime(df_historico_auto["Data"])
                         st.session_state['df_template'] = df_historico_auto
-                        # Força recarregamento da tabela de histórico
-                        if 'chave_tabela' in st.session_state:
-                            st.session_state['chave_tabela'] += 1
+                        if 'chave_tabela' in st.session_state: st.session_state['chave_tabela'] += 1
                         st.sidebar.success("✅ Histórico preenchido!")
             
             st.session_state['ultimo_arquivo_id'] = arquivo_atual_id
@@ -176,27 +128,50 @@ if arquivo_upload:
         except Exception as e:
             st.sidebar.error(f"Erro ao ler arquivo: {e}")
 
-    # Se o arquivo já foi processado, apenas carrega os dados financeiros (sem mexer no histórico)
+    # Recupera da sessão se já foi processado
     elif arquivo_atual_id == st.session_state['ultimo_arquivo_id']:
-        if arquivo_upload.name.lower().endswith('.pdf'):
-            df_importado = extrair_dados_pdf(arquivo_upload)
-        else:
-            html_content = arquivo_upload.getvalue().decode("utf-8", errors='ignore')
-            df_importado = extrair_dados_html(html_content)
+        if 'df_importado' in st.session_state:
+            df_importado = st.session_state.df_importado
 
-# --- SEÇÃO 1: HISTÓRICO ---
-st.header("1️⃣ Histórico de Carreira")
+# --- 2. ÁREA DE DADOS EXTRAÍDOS (NOVIDADE) ---
+# Aqui mostramos os dados convertidos e permitimos o download
+if not df_importado.empty:
+    with st.expander("📊 Ver Dados Extraídos do Arquivo (Conversão)", expanded=True):
+        st.write("Estes foram os dados financeiros encontrados no seu arquivo:")
+        
+        # Formata para exibição
+        df_display = df_importado.copy()
+        if 'Competencia' in df_display.columns:
+            df_display['Competencia'] = df_display['Competencia'].dt.strftime('%m/%Y')
+        if 'Valor_Achado' in df_display.columns:
+            df_display['Valor_Achado'] = df_display['Valor_Achado'].apply(lambda x: f"R$ {x:,.2f}")
+            
+        st.dataframe(df_display, use_container_width=True, height=250)
+        
+        # --- BOTÃO DE DOWNLOAD DO CSV CONVERTIDO ---
+        csv_extraido = df_importado.to_csv(sep=';', decimal=',', index=False).encode('utf-8')
+        col_d1, col_d2 = st.columns([1, 2])
+        with col_d1:
+            st.download_button(
+                label="📥 Baixar Dados em CSV",
+                data=csv_extraido,
+                file_name="dados_financeiros_extraidos.csv",
+                mime="text/csv",
+                help="Baixe os dados brutos que o sistema leu do seu PDF/HTML."
+            )
+        with col_d2:
+            st.caption("ℹ️ Use este arquivo para conferência ou para guardar seus dados financeiros de forma organizada.")
 
-if arquivo_upload is None:
-    st.info("💡 Preencha manualmente abaixo ou suba o arquivo na barra lateral.")
+# --- 3. HISTÓRICO (CENTRAL) ---
+st.subheader("2. Histórico de Carreira")
+if arquivo_upload is None: st.info("💡 Dica: Baixe o modelo CSV na lateral, preencha e suba para preencher tudo automático.")
 
 if 'df_template' not in st.session_state:
     df_init = pd.DataFrame([{"Data": "01/02/2010", "Posto": "Soldado"}])
     df_init["Data"] = pd.to_datetime(df_init["Data"], dayfirst=True)
     st.session_state['df_template'] = df_init
 
-if 'chave_tabela' not in st.session_state:
-    st.session_state['chave_tabela'] = 0
+if 'chave_tabela' not in st.session_state: st.session_state['chave_tabela'] = 0
 
 historico_final = st.data_editor(
     st.session_state['df_template'], 
@@ -219,15 +194,13 @@ if col_sort.button("🔄 Reordenar por Data"):
     st.session_state['chave_tabela'] += 1
     st.rerun()
 
-# --- BOTÃO DE AVANÇO (PASSO 1 -> 2) ---
+# --- 4. GERAÇÃO E CONFRONTO ---
 st.markdown("---")
-if st.button("Avançar para Conferência Financeira ➡️", type="primary"):
+if st.button("🚀 Gerar Cálculo e Confrontar Valores", type="primary"):
     historico_lista = historico_final.to_dict('records')
-    
     calc = CalculadoraMilitar(data_ingresso, data_ajuizamento, historico_lista)
     df_calculo = calc.gerar_tabela_base()
     
-    # Preenche valor pago se tiver arquivo
     if not df_importado.empty:
         df_calculo['Competencia'] = pd.to_datetime(df_calculo['Competencia'])
         registros = 0
@@ -238,22 +211,20 @@ if st.button("Avançar para Conferência Financeira ➡️", type="primary"):
             if mask.any():
                 df_calculo.loc[mask, 'Valor_Pago'] = valor_ext
                 registros += 1
-        st.toast(f"{registros} valores importados com sucesso!", icon="✅")
+        st.toast(f"{registros} valores financeiros preenchidos do arquivo!", icon="💰")
 
-    # Salva no estado para o próximo passo
+ # Salva no estado para o próximo passo
     st.session_state['df_base'] = df_calculo
     st.session_state['calculadora'] = calc
     st.session_state['passo'] = 2
     st.rerun()
-
-# --- SEÇÃO 2: CONFERÊNCIA ---
-if 'passo' in st.session_state and st.session_state['passo'] >= 2:
-    st.header("2️⃣ Conferência Financeira")
-    st.write("Abaixo, o sistema compara o que você **Deveria Receber (Lei)** com o que foi **Efetivamente Pago**.")
-    st.info("📝 Se houver meses com valor pago zerado ou errado, você pode editar diretamente na tabela.")
+if 'passo' in st.session_state and st.session_state['passo'] >= 2:    
+    # Exibe Tabela
+    st.subheader("3. Conferência Financeira")
+    st.write("Edite os valores pagos se necessário e confira o resultado final.")
     
     df_para_editar = st.session_state['df_base']
-    
+
     editor_financeiro = st.data_editor(
         df_para_editar[['Competencia', 'Posto_Vigente', 'Valor_Devido', 'Valor_Pago']],
         key="editor_financeiro_final",
@@ -266,7 +237,10 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 2:
         use_container_width=True, height=500
     )
 
-    # Botão para calcular final
+    col_calc, col_reset = st.columns([1, 4])
+    
+
+      # Botão de Cálculo
     if st.button("🚀 Calcular Resultado Final"):
         calc_obj = st.session_state['calculadora']
         resultado_final = calc_obj.aplicar_financeiro(editor_financeiro)
@@ -368,5 +342,4 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
-
 
