@@ -81,45 +81,12 @@ def extrair_dados_pdf(arquivo_pdf):
     # 2. Texto qualquer até achar 355 (Rubrica)
     # 3. Valor OBRIGATÓRIO ter decimal
     # 4. Resto (Cargo)
-    regex_universal = re.compile(r'(\d{2}/\d{4}).*?355.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
-
+    regex_universal = re.compile(r'\d{2}/\d{4}.*?(\d{2}/\d{4}).*?355.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
+    
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for page in pdf.pages:
                 
-                # --- ESTRATÉGIA A: VARREDURA EM TABELAS ---
-                tabelas = page.extract_tables()
-                
-                for tabela in tabelas:
-                    if not tabela: continue
-                    
-                    # Varre todas as células
-                    for row in tabela:
-                        for cell in row:
-                            if not cell: continue
-                            
-                            texto_limpo = remover_acentos(cell)
-                            
-                            is_subsidio = "SUBSIDIO" in texto_limpo or "VANTAG" in texto_limpo
-                            match = regex_universal.search(texto_limpo)
-                            
-                            if match and is_subsidio:
-                                data_str = match.group(1)
-                                valor_str = match.group(2)
-                                cargo_str = match.group(3)
-                                
-                                val_final = limpar_dinheiro_inteligente(valor_str)
-                                
-                                if val_final > 0:
-                                    # Limpa o cargo usando a nova função
-                                    cargo_final = limpar_cargo(cargo_str)
-                                    
-                                    if not any(d['Competencia'] == data_str and d['Valor_Achado'] == val_final for d in dados_encontrados):
-                                        dados_encontrados.append({
-                                            'Competencia': data_str,
-                                            'Valor_Achado': val_final,
-                                            'Cargo_Detectado': cargo_final
-                                        })
 
                 # --- ESTRATÉGIA B: TEXTO CORRIDO (Fallback) ---
                 if True: # Executa sempre para garantir
@@ -140,23 +107,27 @@ def extrair_dados_pdf(arquivo_pdf):
                                     if val_final > 10: 
                                         # Limpa o cargo
                                         cargo_final = limpar_cargo(cargo_str)
-                                        
-                                        if not any(d['Competencia'] == data_str for d in dados_encontrados):
-                                            dados_encontrados.append({
-                                                'Competencia': data_str,
-                                                'Valor_Achado': val_final,
-                                                'Cargo_Detectado': cargo_final
+                                
+                                    
+                                        dados_encontrados.append({
+                                            'Competencia': data_str,
+                                            'Valor_Achado': val_final,
+                                            'Cargo_Detectado': cargo_final
                                             })
+                    
 
         # --- CONSOLIDAÇÃO ---
         if dados_encontrados:
             df = pd.DataFrame(dados_encontrados)
             df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
-            
+            df = df.sort_values(by='Valor_Achado', ascending=False)
+            # AGORA A MÁGICA: SOMA TUDO DA MESMA COMPETÊNCIA
+            # Ex: Jan (6.473) + Jan (1.153) = Jan (7.626)
             df = df.groupby('Competencia', as_index=False).agg({
                 'Valor_Achado': 'sum',
-                'Cargo_Detectado': 'first'
+                'Cargo_Detectado': 'first' # Mantém o primeiro nome de cargo encontrado
             })
+            
             return df.sort_values('Competencia')
         else:
             return pd.DataFrame()
@@ -164,4 +135,3 @@ def extrair_dados_pdf(arquivo_pdf):
     except Exception as e:
         st.error(f"Erro ao ler PDF: {e}")
         return pd.DataFrame()
-
