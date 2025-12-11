@@ -342,4 +342,3 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
-
