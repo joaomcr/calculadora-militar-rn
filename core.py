@@ -107,8 +107,8 @@ class CalculadoraMilitar:
 
         # Regra Geral (3% a cada 3 anos)
         # Calcula tempo de serviço até o último dia do mês para ser justo
-        ultimo_dia = data_referencia + relativedelta(day=31)
-        anos = relativedelta(ultimo_dia, self.data_ingresso).years
+        #ultimo_dia = data_referencia + relativedelta(day=31)
+        anos = relativedelta(data_referencia, self.data_ingresso).years
         return 1 + (int(anos / 3) * 0.03)
 
     # --- NOVO: LÓGICA PRO RATA DIE ---
@@ -152,6 +152,8 @@ class CalculadoraMilitar:
             # Definindo os períodos
             # Periodo A (Antigo): Do dia 1 até o dia anterior à promoção
             dias_antigos = dia_promo - 1
+            # Defina a data exata do fim do período antigo (dia anterior à promoção)
+            data_fim_periodo_antigo = data_inicio_mes.replace(day=dias_antigos)
             
             # Periodo B (Novo): Da data da promoção até o fim do mês
             dias_novos = (ultimo_dia_numero - dia_promo) + 1
@@ -162,7 +164,7 @@ class CalculadoraMilitar:
             
             # Cálculo A (Antigo)
             perc_ant = self.escalonamento.get(posto_antigo, 0.0)
-            nivel_ant = self.get_fator_nivel(posto_antigo, data_inicio_mes)
+            nivel_ant = self.get_fator_nivel(posto_antigo, data_fim_periodo_antigo) 
             valor_diario_antigo = (base_coronel * perc_ant * nivel_ant) / ultimo_dia_numero
             total_antigo = valor_diario_antigo * dias_antigos
             
@@ -178,7 +180,40 @@ class CalculadoraMilitar:
             texto_posto = f"{posto_antigo} ({dias_antigos}d) -> {posto_novo} ({dias_novos}d)"
             
             return pd.Series([texto_posto, valor_final_pro_rata])
+            
+    def consolidar_com_pdf(self, df_calculado, df_pdf):
+        """
+        Cruza a tabela 'ideal' (calculada pelo histórico) com a tabela 'real' (extraída do PDF).
+        """
+        # Garante tipagem de data para o cruzeiro
+        df_pdf['Competencia'] = pd.to_datetime(df_pdf['Competencia'])
+        df_calculado['Competencia'] = pd.to_datetime(df_calculado['Competencia'])
 
+        # Prepara o PDF: Mantém apenas colunas essenciais e renomeia
+        # Importante: O PDF já deve ter vindo daquela função 'extrair_dados_pdf' 
+        # que agrupa e soma por competência.
+        df_pdf_clean = df_pdf[['Competencia', 'Valor_Achado']].copy()
+        df_pdf_clean = df_pdf_clean.rename(columns={'Valor_Achado': 'Valor_Pago_PDF'})
+
+        # MERGE (Left Join):
+        # A base é sempre o df_calculado (histórico). Se não tiver PDF no mês, fica NaN.
+        df_final = pd.merge(df_calculado, df_pdf_clean, on='Competencia', how='left')
+
+        # Substitui o Valor_Pago (que era 0.0) pelo valor do PDF
+        # Se for NaN (não achou no PDF), preenche com 0.0
+        df_final['Valor_Pago'] = df_final['Valor_Pago_PDF'].fillna(0.0)
+        
+        # Remove a coluna auxiliar
+        df_final = df_final.drop(columns=['Valor_Pago_PDF'])
+
+        # Recalcula a diferença agora com dados reais
+        # Diferença = O que deveria receber (Devido) - O que recebeu (Pago)
+        df_final['Diferenca_Mensal'] = df_final['Valor_Devido'] - df_final['Valor_Pago']
+        
+        # Opcional: Arredondar para evitar dízimas de ponto flutuante
+        df_final['Diferenca_Mensal'] = df_final['Diferenca_Mensal'].round(2)
+
+        return df_final
     # --- PROCESSAMENTO PRINCIPAL ---
     def gerar_tabela_base(self):
         df = self.gerar_timeline()
