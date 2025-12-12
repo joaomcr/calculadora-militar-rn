@@ -5,11 +5,12 @@ from dateutil.relativedelta import relativedelta
 import calendar
 
 class CalculadoraMilitar:
-    def __init__(self, data_ingresso, data_ajuizamento, historico_promocoes):
+    def __init__(self, data_ingresso, data_ajuizamento, historico_promocoes, datas_ferias_pdf=[]):
         # 1. Configurações
         self.data_ingresso = pd.to_datetime(data_ingresso, dayfirst=True)
         self.data_ajuizamento = pd.to_datetime(data_ajuizamento, dayfirst=True)
         self.data_corte_selic = pd.to_datetime('2021-12-01') # Marco da EC 113
+        self.datas_ferias_pdf = pd.to_datetime(datas_ferias_pdf, dayfirst=True, errors='coerce')
         
         # Histórico (Ordenado)
         self.df_carreira = pd.DataFrame(historico_promocoes)
@@ -61,8 +62,9 @@ class CalculadoraMilitar:
     # --- MÉTODOS AUXILIARES ---
     def gerar_timeline(self):
         # Data de Início (Prescrição 5 anos)
-        inicio = self.data_ajuizamento - relativedelta(years=5)
-        if inicio < self.data_ingresso: inicio = self.data_ingresso
+        marco_prescricional = self.data_ajuizamento - relativedelta(years=5)
+        inicio = marco_prescricional.replace(day=1)
+        if inicio < self.data_ingresso: inicio = self.data_ingresso.replace(day=1)
         
         # --- CORREÇÃO DA DATA FINAL (EXIGIBILIDADE) ---
         # Não podemos calcular o mês corrente pois o pagamento ainda não ocorreu.
@@ -75,9 +77,57 @@ class CalculadoraMilitar:
         if fim < inicio:
             fim = inicio
 
-        # Gera a linha do tempo até o mês fechado anterior
-        datas = pd.date_range(start=inicio, end=fim, freq='MS') 
-        return pd.DataFrame({'Competencia': datas})
+        # 1. Gera meses normais (Dia 01)
+        datas_normais = pd.date_range(start=inicio, end=fim, freq='MS')
+        
+        # 2. Gera datas de 13º Salário (Dia 13 de Dezembro de cada ano)
+        # Pega todos os anos únicos da lista
+        anos = datas_normais.year.unique()
+        datas_13 = []
+
+        for ano in anos:
+            data_13 = pd.Timestamp(year=ano, month=12, day=13)
+            # Só adiciona se o mês de dezembro já tiver passado ou estiver no range
+            if data_13 <= fim:
+                datas_13.append(data_13)
+                
+        # FÉRIAS (Dia 15) - Baseado no que veio do PDF
+        datas_ferias = []
+        for data_f in self.datas_ferias_pdf:
+            # Só adiciona se a data do PDF estiver dentro da prescrição/processo
+            if inicio <= data_f <= fim:
+                # Garante que seja dia 15 para bater com o padrão
+                data_virtual = data_f.replace(day=15)
+                datas_ferias.append(data_virtual)
+
+        # Junta tudo e ordena
+        todas_datas = list(datas_normais) + datas_13 + datas_ferias
+        todas_datas.sort()
+        
+        return pd.DataFrame({'Competencia': todas_datas})
+
+    def gerar_tabela_base(self):
+        # Gera timeline com meses normais E 13º
+        df = self.gerar_timeline()
+        
+        # O resto da lógica funciona igual, pois buscar_posto e buscar_valor
+        # funcionam baseados em data <= data_atual, então dia 13 pega o posto de dez.
+        
+        # Lógica Pro Rata (Mantida)
+        resultado_nominal = df.apply(self.calcular_valor_nominal_com_prorata, axis=1)
+        df['Posto_Vigente'] = resultado_nominal[0]
+        df['Valor_Devido'] = resultado_nominal[1]
+        
+        df['Norma_Legal'] = df['Competencia'].apply(self.buscar_norma_vigente)
+        
+        # Identificação visual do 13º
+        # Se for dia 13, muda o nome do posto para "13º Salário - [Posto]"
+        mask_13 = df['Competencia'].dt.day == 13
+        df.loc[mask_13, 'Posto_Vigente'] = "13º Salário - " + df.loc[mask_13, 'Posto_Vigente']
+        
+        df['Valor_Pago'] = 0.0 
+        return df
+
 
     def buscar_posto_na_data(self, data_especifica):
         """ Retorna o posto vigente em um dia específico (Para usar no Pro Rata) """
@@ -93,93 +143,137 @@ class CalculadoraMilitar:
         return float(res.iloc[0]['Valor'])
 
     def get_fator_nivel(self, posto, data_referencia):
-        """ Calcula o multiplicador do Nível (Triênio/Equivalência) - PRESERVADO """
+        """ 
+        Calcula o multiplicador do Nível.
+        CORREÇÃO: Agora usa Juros Compostos (Progressão sobre nível anterior).
+        Fórmula: 1.03 elevado ao número de triênios.
+        """
         posto = str(posto).upper().strip()
         if posto == "NÃO INGRESSOU": return 1.0
         
-        # Regras de Exceção (Bolsas Fixas - Aluno e Aspirante)
+        # --- REGRAS DE EXCEÇÃO (BOLSAS) ---
+        # Nível I (0 triênios) = 1.03^0 = 1.00
+        # Nível II (1 triênio) = 1.03^1 = 1.03
+        # Nível III (2 triênios) = 1.03^2 = 1.0609
+        
         if "ASPIRANTE" in posto or "ASP." in posto: return 1.00
         if "ALUNO CFO" in posto:
-            if "3" in posto or "III" in posto: return 1.06
-            elif "2" in posto or "II" in posto: return 1.06
-            elif "1" in posto or posto.endswith(" I"): return 1.03
-            return 1.03 # Padrão
+            if "3" in posto or "III" in posto: return 1.03 ** 2 # Nível III
+            elif "2" in posto or "II" in posto: return 1.03 ** 2 # Nível III
+            elif "1" in posto or posto.endswith(" I"): return 1.03 ** 1 # Nível II
+            return 1.03 ** 1 # Padrão
 
-        # Regra Geral (3% a cada 3 anos)
-        # Calcula tempo de serviço até o último dia do mês para ser justo
-        #ultimo_dia = data_referencia + relativedelta(day=31)
-        anos = relativedelta(data_referencia, self.data_ingresso).years
-        return 1 + (int(anos / 3) * 0.03)
+        # --- REGRA GERAL (TEMPO DE SERVIÇO) ---
+        ultimo_dia = data_referencia + relativedelta(day=31)
+        anos = relativedelta(ultimo_dia, self.data_ingresso).years
+        trienios = int(anos / 3)
+        
+        # AQUI ESTÁ A CORREÇÃO MATEMÁTICA:
+        # Antes: 1 + (trienios * 0.03) -> Juros Simples
+        # Agora: 1.03 ** trienios      -> Juros Compostos (Sobre o anterior)
+        return 1.03 ** trienios
 
     # --- NOVO: LÓGICA PRO RATA DIE ---
     def calcular_valor_nominal_com_prorata(self, row):
         """
         Calcula o valor devido no mês. 
-        Se houver promoção NO MEIO do mês, calcula proporcionalmente aos dias.
+        Trata:
+        1. Férias (Dia 15)
+        2. 13º Salário (Dia 13)
+        3. Mês Normal com ou sem Promoção (Dia 01)
         """
-        data_inicio_mes = row['Competencia'] # Dia 01
         
-        # Descobre o último dia do mês (28, 29, 30 ou 31)
-        ultimo_dia_numero = calendar.monthrange(data_inicio_mes.year, data_inicio_mes.month)[1]
-        data_fim_mes = data_inicio_mes.replace(day=ultimo_dia_numero)
+        # --- CORREÇÃO DO ERRO AQUI ---
+        # Definimos data_atual logo no início extraindo da linha
+        data_atual = row['Competencia'] 
         
-        # 1. Verifica se houve promoção DENTRO deste mês
-        # A promoção tem que ser > dia 01 e <= dia final
-        promocao_no_mes = self.df_carreira[
-            (self.df_carreira['Data'] > data_inicio_mes) & 
-            (self.df_carreira['Data'] <= data_fim_mes)
-        ]
-        
-        # Busca Valor Base do Coronel para este mês
-        base_coronel = self.buscar_valor_coronel(data_inicio_mes)
-        
-        # --- CENÁRIO 1: MÊS NORMAL (Sem mudança de posto) ---
-        if promocao_no_mes.empty:
-            posto_vigente = self.buscar_posto_na_data(data_inicio_mes)
-            perc = self.escalonamento.get(posto_vigente, 0.0)
-            fator_nivel = self.get_fator_nivel(posto_vigente, data_inicio_mes)
+        # 1. LÓGICA DE FÉRIAS (DIA 15)
+        if data_atual.day == 15:
+            # Para saber o valor, olhamos para o dia 01 do mesmo mês
+            data_ref = data_atual.replace(day=1)
             
-            valor_final = base_coronel * perc * fator_nivel
+            posto = self.buscar_posto_na_data(data_ref)
+            base = self.buscar_valor_coronel(data_ref)
+            perc = self.escalonamento.get(posto, 0.0)
+            nivel = self.get_fator_nivel(posto, data_ref)
             
-            return pd.Series([posto_vigente, valor_final])
+            valor_cheio = base * perc * nivel
+            
+            # Férias é 1/3 do valor cheio
+            return pd.Series([f"Férias (1/3) - {posto}", valor_cheio / 3])
 
-        # --- CENÁRIO 2: MÊS COM PROMOÇÃO (PRO RATA DIE) ---
+        # 2. LÓGICA DE 13º SALÁRIO (DIA 13)
+        elif data_atual.day == 13:
+            # Pega referência de dezembro (dia 01)
+            data_ref = data_atual.replace(day=1)
+            
+            posto = self.buscar_posto_na_data(data_ref)
+            base = self.buscar_valor_coronel(data_ref)
+            perc = self.escalonamento.get(posto, 0.0)
+            nivel = self.get_fator_nivel(posto, data_ref)
+            
+            valor_cheio = base * perc * nivel
+            
+            return pd.Series([f"13º Salário - {posto}", valor_cheio])
+
+        # 3. LÓGICA MENSAL COMUM (DIA 01 - PRO RATA)
         else:
-            # Pega a data da promoção
-            data_promo = promocao_no_mes.iloc[0]['Data']
-            dia_promo = data_promo.day
+            data_inicio_mes = data_atual # Mantém nome antigo para a lógica abaixo
             
-            # Definindo os períodos
-            # Periodo A (Antigo): Do dia 1 até o dia anterior à promoção
-            dias_antigos = dia_promo - 1
-            # Defina a data exata do fim do período antigo (dia anterior à promoção)
-            data_fim_periodo_antigo = data_inicio_mes.replace(day=dias_antigos)
+            # Descobre o último dia do mês (28, 29, 30 ou 31)
+            ultimo_dia_numero = calendar.monthrange(data_inicio_mes.year, data_inicio_mes.month)[1]
+            data_fim_mes = data_inicio_mes.replace(day=ultimo_dia_numero)
             
-            # Periodo B (Novo): Da data da promoção até o fim do mês
-            dias_novos = (ultimo_dia_numero - dia_promo) + 1
+            # Verifica promoção DENTRO deste mês
+            promocao_no_mes = self.df_carreira[
+                (self.df_carreira['Data'] > data_inicio_mes) & 
+                (self.df_carreira['Data'] <= data_fim_mes)
+            ]
             
-            # Postos
-            posto_antigo = self.buscar_posto_na_data(data_inicio_mes) # Dia 01
-            posto_novo = promocao_no_mes.iloc[0]['Posto'] # O posto da promoção
+            base_coronel = self.buscar_valor_coronel(data_inicio_mes)
             
-            # Cálculo A (Antigo)
-            perc_ant = self.escalonamento.get(posto_antigo, 0.0)
-            nivel_ant = self.get_fator_nivel(posto_antigo, data_fim_periodo_antigo) 
-            valor_diario_antigo = (base_coronel * perc_ant * nivel_ant) / ultimo_dia_numero
-            total_antigo = valor_diario_antigo * dias_antigos
-            
-            # Cálculo B (Novo)
-            perc_nov = self.escalonamento.get(posto_novo, 0.0)
-            nivel_nov = self.get_fator_nivel(posto_novo, data_fim_mes)
-            valor_diario_novo = (base_coronel * perc_nov * nivel_nov) / ultimo_dia_numero
-            total_novo = valor_diario_novo * dias_novos
-            
-            valor_final_pro_rata = total_antigo + total_novo
-            
-            # Retorna o texto indicando a mudança para ficar bonito na tabela
-            texto_posto = f"{posto_antigo} ({dias_antigos}d) -> {posto_novo} ({dias_novos}d)"
-            
-            return pd.Series([texto_posto, valor_final_pro_rata])
+            # CENÁRIO A: MÊS NORMAL (Sem mudança de posto)
+            if promocao_no_mes.empty:
+                posto_vigente = self.buscar_posto_na_data(data_inicio_mes)
+                perc = self.escalonamento.get(posto_vigente, 0.0)
+                fator_nivel = self.get_fator_nivel(posto_vigente, data_inicio_mes)
+                
+                valor_final = base_coronel * perc * fator_nivel
+                
+                return pd.Series([posto_vigente, valor_final])
+
+            # CENÁRIO B: MÊS COM PROMOÇÃO (PRO RATA DIE)
+            else:
+                data_promo = promocao_no_mes.iloc[0]['Data']
+                dia_promo = data_promo.day
+                
+                # Período A (Antigo)
+                dias_antigos = dia_promo - 1
+                data_fim_periodo_antigo = data_inicio_mes.replace(day=dias_antigos) if dias_antigos > 0 else data_inicio_mes
+                
+                # Período B (Novo)
+                dias_novos = (ultimo_dia_numero - dia_promo) + 1
+                
+                posto_antigo = self.buscar_posto_na_data(data_inicio_mes)
+                posto_novo = promocao_no_mes.iloc[0]['Posto']
+                
+                # Cálculo A
+                perc_ant = self.escalonamento.get(posto_antigo, 0.0)
+                nivel_ant = self.get_fator_nivel(posto_antigo, data_fim_periodo_antigo) 
+                valor_diario_antigo = (base_coronel * perc_ant * nivel_ant) / ultimo_dia_numero
+                total_antigo = valor_diario_antigo * dias_antigos
+                
+                # Cálculo B
+                perc_nov = self.escalonamento.get(posto_novo, 0.0)
+                nivel_nov = self.get_fator_nivel(posto_novo, data_fim_mes)
+                valor_diario_novo = (base_coronel * perc_nov * nivel_nov) / ultimo_dia_numero
+                total_novo = valor_diario_novo * dias_novos
+                
+                valor_final_pro_rata = total_antigo + total_novo
+                
+                texto_posto = f"{posto_antigo} ({dias_antigos}d) -> {posto_novo} ({dias_novos}d)"
+                
+                return pd.Series([texto_posto, valor_final_pro_rata])
             
     def consolidar_com_pdf(self, df_calculado, df_pdf):
         """
@@ -228,12 +322,17 @@ class CalculadoraMilitar:
         df['Valor_Pago'] = 0.0 
         return df
 
+        # Passo 3: Pequeno Ajuste no `calcular_atualizacao` (Juros do 13º)
+        # Como o 13º vence no dia 20/Dezembro, a regra de juros (Mês Seguinte / Jan) funciona bem com a nossa lógica padrão (que joga para o mês seguinte). Mas precisamos garantir que a data de referência para o IPCA (índice acumulado) funcione.
+
+
     def calcular_atualizacao(self, row):
         # --- LÓGICA FINANCEIRA (PRESERVADA) ---
         # Essa é a função que bateu com o Excel. Não mexemos nela!
         
         data_competencia = row['Competencia']
         valor_base = row['Diferenca_Mensal'] 
+        data_ref_mes_atual = data_competencia.replace(day=1)
         
         if valor_base <= 0:
             return pd.Series([0.0, 0.0, 0.0, 0.0], index=['IPCA_Fator', 'Juros_Fator', 'Selic_Fator', 'Total_Final'])
