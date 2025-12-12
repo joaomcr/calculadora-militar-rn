@@ -81,54 +81,95 @@ def extrair_dados_pdf(arquivo_pdf):
     # 2. Texto qualquer até achar 355 (Rubrica)
     # 3. Valor OBRIGATÓRIO ter decimal
     # 4. Resto (Cargo)
-    regex_universal = re.compile(r'\d{2}/\d{4}.*?(\d{2}/\d{4}).*?355.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
-    
+    regex_subsidio = re.compile(r'\d{2}/\d{4}.*?(\d{2}/\d{4}).*?355.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
+    regex_natalina = re.compile(r'\d{2}/\d{4}.*?(\d{2}/\d{4}).*?351.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
+    regex_ferias = re.compile(r'\d{2}/\d{4}.*?(\d{2}/\d{4}).*?359.*?(\d{1,3}(?:[.,]\d{3})*[.,]\d{2})\s+(.*)')
     try:
         with pdfplumber.open(arquivo_pdf) as pdf:
             for page in pdf.pages:
-                
+                texto_pagina = page.extract_text()
+                if texto_pagina:
+                    for linha in texto_pagina.split('\n'):
+                        linha_limpa = remover_acentos(linha)
+                        
+                        # Filtra linhas de interesse
+                        eh_subsidio = "355" in linha_limpa
+                        eh_natalina = "351" in linha_limpa
+                        eh_ferias   = "359" in linha_limpa # ou "359", confirme seu código
 
-                # --- ESTRATÉGIA B: TEXTO CORRIDO (Fallback) ---
-                if True: # Executa sempre para garantir
-                    texto_pagina = page.extract_text()
-                    if texto_pagina:
-                        for linha in texto_pagina.split('\n'):
-                            linha_limpa = remover_acentos(linha)
+                        # Inicializa variáveis para este loop
+                        match = None
+                        tipo_pagamento = ""
+
+                        # Lógica de decisão
+                        if eh_subsidio:
+                            match = regex_subsidio.search(linha_limpa)
+                            tipo_pagamento = "mensal"
+                        elif eh_natalina:
+                            match = regex_natalina.search(linha_limpa)
+                            tipo_pagamento = "natalina"
+                        elif eh_ferias:
+                            match = regex_ferias.search(linha_limpa)
+                            tipo_pagamento = "ferias"
+
+                        # Se houve match, processa
+                        if match:
+                            data_str = match.group(1)
+                            valor_str = match.group(2)
+                            cargo_str = match.group(3)
                             
-                            if "355" in linha_limpa and ("SUBSIDIO" in linha_limpa or "VANTAG" in linha_limpa):
-                                match = regex_universal.search(linha_limpa)
-                                if match:
-                                    data_str = match.group(1)
-                                    valor_str = match.group(2)
-                                    cargo_str = match.group(3)
-                                    
-                                    val_final = limpar_dinheiro_inteligente(valor_str)
-                                    
-                                    if val_final > 10: 
-                                        # Limpa o cargo
-                                        cargo_final = limpar_cargo(cargo_str)
-                                
-                                    
-                                        dados_encontrados.append({
-                                            'Competencia': data_str,
-                                            'Valor_Achado': val_final,
-                                            'Cargo_Detectado': cargo_final
-                                            })
-                    
+                            val_final = limpar_dinheiro_inteligente(valor_str)
+                            
+                            if val_final > 0:
+                                # --- PADRONIZAÇÃO DE DATAS ---
+                                try:
+                                    if tipo_pagamento == "natalina":
+                                        # Natalina = Dia 13
+                                        ano = data_str.split('/')[1]
+                                        data_final = f"13/12/{ano}"
+                                        
+                                    elif tipo_pagamento == "ferias":
+                                        # Férias = Dia 15 (Convenção para não misturar)
+                                        mes, ano = data_str.split('/')
+                                        data_final = f"15/{mes}/{ano}"
+                                        
+                                    else: 
+                                        # Mensal = Dia 01
+                                        data_final = f"01/{data_str}"
+                                except:
+                                    data_final = data_str
 
-        # --- CONSOLIDAÇÃO ---
+                                cargo_final = limpar_cargo(cargo_str)
+
+                                dados_encontrados.append({
+                                    'Competencia': data_final,
+                                    'Valor_Achado': val_final,
+                                    'Cargo_Detectado': cargo_final
+                                })
+
+        # --- CONSOLIDAÇÃO FORA DO LOOP ---
         if dados_encontrados:
             df = pd.DataFrame(dados_encontrados)
-            df['Competencia'] = pd.to_datetime(df['Competencia'], format='%m/%Y', dayfirst=True, errors='coerce')
-            df = df.sort_values(by='Valor_Achado', ascending=False)
-            # AGORA A MÁGICA: SOMA TUDO DA MESMA COMPETÊNCIA
-            # Ex: Jan (6.473) + Jan (1.153) = Jan (7.626)
-            df = df.groupby('Competencia', as_index=False).agg({
+            
+            # Função interna para aplicar no apply
+            def definir_tipo(row):
+                s = str(row['Competencia'])
+                if s.startswith('13/'): return '13º Salário'
+                if s.startswith('15/'): return 'Férias (1/3)'
+                return 'Subsídio'
+
+            df['Tipo'] = df.apply(definir_tipo, axis=1)
+
+            # Converte para data com segurança (DD/MM/AAAA)
+            df['Competencia'] = pd.to_datetime(df['Competencia'], dayfirst=True, errors='coerce')
+            
+            # Agrupa (caso haja férias parceladas no mesmo mês, ele soma)
+            df = df.groupby(['Competencia', 'Tipo'], as_index=False).agg({
                 'Valor_Achado': 'sum',
-                'Cargo_Detectado': 'first' # Mantém o primeiro nome de cargo encontrado
+                'Cargo_Detectado': 'first'
             })
             
-            return df.sort_values('Competencia')
+            return df.sort_values(['Competencia'])
         else:
             return pd.DataFrame()
 
