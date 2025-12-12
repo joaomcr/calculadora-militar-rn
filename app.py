@@ -195,24 +195,51 @@ if col_sort.button("🔄 Reordenar por Data"):
     st.rerun()
 
 # --- 4. GERAÇÃO E CONFRONTO ---
+# --- 4. GERAÇÃO E CONFRONTO ---
 st.markdown("---")
 if st.button("🚀 Gerar Cálculo e Confrontar Valores", type="primary"):
+    
+    # Prepara o histórico
     historico_lista = historico_final.to_dict('records')
-    calc = CalculadoraMilitar(data_ingresso, data_ajuizamento, historico_lista)
-    df_calculo = calc.gerar_tabela_base()
+    
+    # [PASSO 1] Captura as datas de férias que o PDF encontrou
+    datas_ferias_encontradas = []
     
     if not df_importado.empty:
-        df_calculo['Competencia'] = pd.to_datetime(df_calculo['Competencia'])
-        registros = 0
-        for index, row in df_importado.iterrows():
-            data_ext = row['Competencia']
-            valor_ext = row['Valor_Achado']
-            mask = df_calculo['Competencia'] == data_ext
-            if mask.any():
-                df_calculo.loc[mask, 'Valor_Pago'] = valor_ext
-                registros += 1
-        st.toast(f"{registros} valores financeiros preenchidos do arquivo!", icon="💰")
+        # Garante que é datetime
+        df_importado['Competencia'] = pd.to_datetime(df_importado['Competencia'], dayfirst=True)
+        
+        # Filtra tudo que for dia 15 (nossa convenção para Férias)
+        datas_ferias_encontradas = df_importado[df_importado['Competencia'].dt.day == 15]['Competencia'].tolist()
+        
+        st.caption(f"📅 Férias identificadas no PDF: {len(datas_ferias_encontradas)} períodos.")
 
+    # [PASSO 2] Instancia a Calculadora PASSANDO essa lista
+    calc = CalculadoraMilitar(
+        data_ingresso, 
+        data_ajuizamento, 
+        historico_lista,
+        datas_ferias_pdf=datas_ferias_encontradas
+    )
+    
+    # [PASSO 3] Gera a tabela "Ideal"
+    df_ideal = calc.gerar_tabela_base()
+    
+    # [PASSO 4] Consolida (Aqui corrigi o nome da variável para df_calculo)
+    if not df_importado.empty:
+        # Cruza Ideal vs Real
+        df_calculo = calc.consolidar_com_pdf(df_ideal, df_importado)
+        st.toast("Confronto realizado com sucesso!", icon="💰")
+    else:
+        # Se não tiver PDF, o cálculo é apenas a tabela ideal
+        df_calculo = df_ideal
+        st.warning("Nenhum dado financeiro importado. Mostrando apenas valores devidos.")
+
+    # [PASSO 5] Salva na sessão (Isso resolve o NameError)
+    st.session_state['df_base'] = df_calculo
+    
+    # Exibe
+    st.dataframe(df_calculo)
  # Salva no estado para o próximo passo
     st.session_state['df_base'] = df_calculo
     st.session_state['calculadora'] = calc
@@ -342,3 +369,4 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
+
