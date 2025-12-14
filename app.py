@@ -234,14 +234,20 @@ if st.button("🚀 Gerar Cálculo e Confrontar Valores", type="primary"):
         # Se não tiver PDF, o cálculo é apenas a tabela ideal
         df_calculo = df_ideal
         st.warning("Nenhum dado financeiro importado. Mostrando apenas valores devidos.")
-
-    # [PASSO 5] Salva na sessão (Isso resolve o NameError)
-    st.session_state['df_base'] = df_calculo
     
+    # ----------------------------------------------------
+    # 💡 PASSO 4.5: ADICIONAR DETALHES (Rubrica_Tipo e Nivel)
+    # O DataFrame de cálculo AGORA precisa ser enriquecido com os detalhes
+    # criados pela função extrair_detalhes_laudo()
+    df_calculo_detalhado = calc.extrair_detalhes_laudo(df_calculo)
+    # ----------------------------------------------------
+
+    # [PASSO 5] Salva na sessão (Usando o DF detalhado)
+    st.session_state['df_base'] = df_calculo_detalhado # <-- SALVAR O NOVO DF
     # Exibe
-    st.dataframe(df_calculo)
- # Salva no estado para o próximo passo
-    st.session_state['df_base'] = df_calculo
+    st.dataframe(df_calculo_detalhado) # <-- EXIBIR O NOVO DF
+    # Salva no estado para o próximo passo
+    st.session_state['df_base'] = df_calculo_detalhado # <-- SALVAR O NOVO DF
     st.session_state['calculadora'] = calc
     st.session_state['passo'] = 2
     st.rerun()
@@ -253,13 +259,17 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 2:
     df_para_editar = st.session_state['df_base']
 
     editor_financeiro = st.data_editor(
-        df_para_editar[['Competencia', 'Posto_Vigente', 'Valor_Devido', 'Valor_Pago']],
+        df_para_editar[['Competencia', 'Posto_Vigente', 'Valor_Devido', 'Valor_Pago', 
+                    'Rubrica_Tipo', 'Posto_Grad', 'Nivel']], # <--- MUDANÇA AQUI
         key="editor_financeiro_final",
         column_config={
             "Competencia": st.column_config.DateColumn("Mês/Ano", format="MM/YYYY", disabled=True),
             "Posto_Vigente": st.column_config.TextColumn("Posto", disabled=True),
             "Valor_Devido": st.column_config.NumberColumn("Devido (Lei)", format="R$ %.2f", disabled=True),
-            "Valor_Pago": st.column_config.NumberColumn("Valor Pago (Ficha)", format="%.2f", required=True)
+            "Valor_Pago": st.column_config.NumberColumn("Valor Pago (Ficha)", format="%.2f", required=True),
+            "Rubrica_Tipo": st.column_config.TextColumn("Tipo Rubrica", disabled=True), 
+            "Posto_Grad": st.column_config.TextColumn("Posto/Grad", disabled=True),
+            "Nivel": st.column_config.TextColumn("Nível", disabled=True),
         },
         use_container_width=True, height=500
     )
@@ -369,4 +379,3 @@ if 'passo' in st.session_state and st.session_state['passo'] >= 3:
             del st.session_state[key]
 
         st.rerun()
-
