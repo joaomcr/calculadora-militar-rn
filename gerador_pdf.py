@@ -5,6 +5,7 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm
 from io import BytesIO
 import locale
+import pandas as pd # Adicione o import do Pandas, pois ele é fundamental para df_final
 
 # Tenta configurar moeda para Brasil
 try:
@@ -14,36 +15,64 @@ except:
 
 def formatar_moeda(valor):
     try:
-        return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        # Usa o método do locale para formatação de moeda brasileira (R$ 1.234,56)
+        # O ReportLab aceita strings formatadas
+        return locale.currency(valor, symbol=False, grouping=True)
     except:
-        return str(valor)
+        # Se o locale falhar (como no ambiente Streamlit/Cloud), usa a formatação manual
+        try:
+            return f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        except:
+            return str(valor)
 
 def formatar_data(data):
     try:
-        return data.strftime("%d/%m/%Y")
+        # Usa a formatação do Pandas para lidar com Timestamps
+        if isinstance(data, pd.Timestamp):
+            return data.strftime("%m/%Y")
+        return data.strftime("%m/%Y")
     except:
         return str(data)
 
+# Seu DataFrame de exemplo (substitua pelos nomes reais das colunas de índices)
+# Se o seu df_final não tiver estas colunas, o código vai falhar.
+# Você deve adicioná-las no seu módulo 'core.py' onde df_final é criado.
+"""
+Colunas NECESSÁRIAS em df_final para o novo laudo:
+'Competencia', 'Rubrica_Tipo', 'Posto_Grad', 'Nivel', 
+'Valor_Devido', 'Valor_Pago', 'Diferenca_Mensal',
+'IPCA_Acumulado', 'Juros_Fator', 'Selic_Acumulada', 'Valor_Atualizado'
+"""
+
 def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_historico):
-    """
-    Gera PDF com: Resumo, Memória de Cálculo, Anexo I (Leis) e Anexo II (Escalonamento).
-    """
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.5*cm, leftMargin=1.5*cm, topMargin=2*cm, bottomMargin=2*cm)
     elementos = []
 
     # Estilos
     styles = getSampleStyleSheet()
+    
+    # 💡 AJUSTE 1: NOVO ESTILO PARA TÍTULO PRINCIPAL DA MEMÓRIA (Centralizado, Grande)
+    estilo_titulo_principal = ParagraphStyle('TituloPrincipal', 
+                                              parent=styles['Heading1'], 
+                                              alignment=1, # Centralizado
+                                              fontSize=16, 
+                                              spaceAfter=15, 
+                                              textColor=colors.darkred)
+    
     estilo_titulo = ParagraphStyle('Titulo', parent=styles['Heading1'], alignment=1, fontSize=14, spaceAfter=10)
     estilo_subtitulo = ParagraphStyle('Subtitulo', parent=styles['Heading2'], alignment=0, fontSize=12, spaceAfter=6, textColor=colors.darkblue)
     estilo_normal = ParagraphStyle('Normal', parent=styles['BodyText'], fontSize=10, leading=12)
     estilo_nota = ParagraphStyle('Nota', parent=styles['BodyText'], fontSize=9, leading=10, textColor=colors.grey)
 
+    # ... (Seções 1, 2, 3 e Quadro Resumo permanecem as mesmas)
+    
     # --- 1. CABEÇALHO ---
     elementos.append(Paragraph("REVISÃO DE SUBSÍDIO - MILITARES RN", estilo_titulo))
     elementos.append(Spacer(1, 0.5*cm))
 
     # --- 2. DADOS DO MILITAR ---
+    # ... (código para DADOS DO MILITAR) ...
     dados_tabela = [
         ["Interessado:", dados_militar['nome'].upper()],
         ["Data de Ingresso:", dados_militar['inicio'].strftime('%d/%m/%Y')],
@@ -60,46 +89,42 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     ]))
     elementos.append(tabela_dados)
     elementos.append(Spacer(1, 0.5*cm))
-# --- 3. HISTÓRICO DE CARREIRA CONSIDERADO (NOVO BLOCO) ---
+
+    # --- 3. HISTÓRICO DE CARREIRA CONSIDERADO ---
+    # ... (código para HISTÓRICO DE CARREIRA) ...
     elementos.append(Paragraph("HISTÓRICO DE CARREIRA CONSIDERADO", estilo_subtitulo))
     elementos.append(Spacer(1, 0.2*cm))
 
     cabecalho_hist = [['Data Promoção', 'Posto / Graduação']]
     linhas_hist = []
     
-    # Ordena por data para garantir cronologia
     if not df_historico.empty:
         df_historico_ord = df_historico.sort_values('Data')
         
         for idx, row in df_historico_ord.iterrows():
             linha = [
-                formatar_data(row['Data']),
+                row['Data'].strftime('%d/%m/%Y'), 
                 str(row['Posto'])
-            ]
+        ]
             linhas_hist.append(linha)
 
     tabela_hist = Table(cabecalho_hist + linhas_hist, colWidths=[4*cm, 10*cm])
     tabela_hist.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'), # Cabeçalho Negrito
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'), # Centralizado
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey), # Fundo Cinza no Cabeçalho
-        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.whitesmoke, colors.white]), # Zebrado
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.whitesmoke, colors.white]),
     ]))
     elementos.append(tabela_hist)
     elementos.append(Spacer(1, 1*cm))
-    # --- 4. QUADRO RESUMO (CORRIGIDO) ---
     
-    # 1. FILTRAGEM DE SEGURANÇA:
-    # Garante que vamos somar APENAS o que vai aparecer na tabela detalhada.
-    # Ignora meses zerados ou erros de arredondamento negativo.
+    # --- 4. QUADRO RESUMO ---
+    # ... (código para QUADRO RESUMO) ...
     df_para_somar = df_final[(df_final['Valor_Devido'] > 0.01) | (df_final['Valor_Pago'] > 0.01)].copy()
 
-    # 2. CÁLCULO DOS TOTAIS
     total_principal = df_para_somar['Diferenca_Mensal'].sum()
     total_final_causa = df_para_somar['Total_Final'].sum()
-    
-    # Acessórios (Juros + CM) é a subtração simples do Total pelo Principal
     total_acessorios = total_final_causa - total_principal
 
     dados_resumo = [
@@ -126,43 +151,122 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     elementos.append(tabela_resumo)
     elementos.append(Spacer(1, 1*cm))
 
-    # --- 4. MEMÓRIA DETALHADA ---
-    elementos.append(Paragraph("MEMÓRIA DE CÁLCULO DETALHADA (Mês a Mês)", estilo_subtitulo))
+    # --- 5. TÍTULO GERAL CENTRALIZADO ---
+    elementos.append(Paragraph("MEMÓRIA DE CÁLCULO DETALHADA MÊS A MÊS", estilo_titulo_principal))
     elementos.append(Spacer(1, 0.2*cm))
+    
+    # [DENTRO DA FUNÇÃO gerar_pdf]
 
-    cabecalho_detalhado = [['Mês/Ref', 'Devido', 'Pago', 'Diferença', 'F. IPCA', 'F. Selic', 'Total']]
-    linhas_detalhadas = []
+    # ... (código anterior)
+
+    # -----------------------------------------------------
+    # 💡 SEÇÃO 5A: TABELA 1 - MEMORIAL DE CÁLCULO NOMINAL
+    # -----------------------------------------------------
+    elementos.append(Paragraph("Memorial de Cálculo (Valores Nominais)", estilo_subtitulo))
+    
+    # Colunas: Mês/Ref; Tipo; Posto/Grad; Nível; Devido; Recebido; Diferença.
+    cabecalho_nominal = [
+        'Mês/Ref', 'Tipo', 'Posto/Grad', 'Nível', 
+        'Devido', 'Recebido', 'Diferença'
+    ]
+    linhas_nominais = []
     
     # Filtra linhas zeradas
     df_imprimir = df_final[(df_final['Valor_Devido'] > 0) | (df_final['Valor_Pago'] > 0)].copy()
-    
+
+
     for idx, row in df_imprimir.iterrows():
+        # Calcula Diferença: max(devido - recebido, 0)
+        diferenca = max(row['Valor_Devido'] - row['Valor_Pago'], 0)
+        
         linha = [
             row['Competencia'].strftime('%m/%Y'),
+            # 💡 USA A NOVA COLUNA CRIADA NO CORE:
+            row['Rubrica_Tipo'], 
+            row['Posto_Grad'], 
+            str(row['Nivel']), 
             formatar_moeda(row['Valor_Devido']),
             formatar_moeda(row['Valor_Pago']),
-            formatar_moeda(row['Diferenca_Mensal']),
-            f"{row['IPCA_Fator']:.4f}",
-            f"{row['Selic_Fator']:.4f}" if row['Selic_Fator'] > 0 else "-",
-            formatar_moeda(row['Total_Final'])
+            formatar_moeda(diferenca)
         ]
-        linhas_detalhadas.append(linha)
+        linhas_nominais.append(linha)
 
-    tabela_longa = Table(cabecalho_detalhado + linhas_detalhadas, colWidths=[2*cm, 2.5*cm, 2.5*cm, 2.5*cm, 1.8*cm, 1.8*cm, 3*cm], repeatRows=1)
-    tabela_longa.setStyle(TableStyle([
+
+    col_widths_nominal = [2*cm, 2.5*cm, 2.5*cm, 1.5*cm, 2.5*cm, 2.5*cm, 2.5*cm]
+    tabela_nominal = Table([cabecalho_nominal] + linhas_nominais, colWidths=col_widths_nominal, repeatRows=1)
+    
+    tabela_nominal.setStyle(TableStyle([
         ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
         ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('ALIGN', (1,1), (3,-1), 'RIGHT'),
-        ('ALIGN', (6,1), (6,-1), 'RIGHT'),
+        # Alinha valores monetários à direita
+        ('ALIGN', (4,1), (-1,-1), 'RIGHT'), 
         ('FONTSIZE', (0,0), (-1,-1), 8),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
         ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
         ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.whitesmoke, colors.white]),
     ]))
-    elementos.append(tabela_longa)
-    elementos.append(Spacer(1, 1*cm))
+    elementos.append(tabela_nominal)
+    elementos.append(Spacer(1, 1.0*cm))
 
-    # --- 5. NOTA METODOLÓGICA ---
+
+    # -----------------------------------------------------
+    # 💡 SEÇÃO 5B: TABELA 2 - ATUALIZAÇÃO DOS VALORES DEVIDOS
+    # -----------------------------------------------------
+    elementos.append(Paragraph("Atualização Monetária e Juros", estilo_subtitulo))
+    
+    # Colunas: Mês/Ref; Diferença; IPCA-E; Juros de Mora; Selic; Valor atualizado.
+    cabecalho_atualizacao = [
+        'Mês/Ref', 'Principal', 
+        'IPCA-E', 'Juros Mora', 'SELIC (%)', 
+        'Valor Atualizado'
+    ]
+    linhas_atualizacao = []
+    
+    # NOTA: O DF 'df_imprimir' já foi filtrado acima.
+    Data_inicio_SELIC = pd.to_datetime('2021-12-01')
+    
+    for idx, row in df_imprimir.iterrows():
+        # Diferença: max(devido - recebido, 0) - Recalculada para garantir consistência
+        diferenca_nominal = max(row['Valor_Devido'] - row['Valor_Pago'], 0)
+        
+        # Recupera os fatores ou valores de atualização (ASSUME nomes de colunas do seu Core)
+        ipca_perc = row['IPCA_Fator']
+        juros_perc = row['Juros_Fator']
+        selic_perc = row['Selic_Fator'] * 100 # Assumindo que este é o fator acumulado
+        
+
+        linha = [
+            row['Competencia'].strftime('%m/%Y'),
+            formatar_moeda(diferenca_nominal),
+            f"{ipca_perc:.10f}" if row['Competencia'].replace(day=1) <= Data_inicio_SELIC else "-",
+            f"{juros_perc:.10f}" if juros_perc > 0 else "-",
+            f"{selic_perc:.2f}%" if selic_perc > 0 else "-",
+            formatar_moeda(row['Total_Final']) # ASSUME que 'Total_Final' é o Valor Atualizado
+        ]
+        linhas_atualizacao.append(linha)
+
+    col_widths_atualizacao = [2*cm, 2.5*cm, 2*cm, 2*cm, 2*cm, 3.5*cm]
+    tabela_atualizacao = Table([cabecalho_atualizacao] + linhas_atualizacao, colWidths=col_widths_atualizacao, repeatRows=1)
+    
+    tabela_atualizacao.setStyle(TableStyle([
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+        # Centraliza fatores (IPCA, Juros, Selic)
+        ('ALIGN', (2,1), (4,-1), 'CENTER'), 
+        # Alinha valores monetários à direita
+        ('ALIGN', (1,1), (1,-1), 'RIGHT'), 
+        ('ALIGN', (5,1), (5,-1), 'RIGHT'), 
+        ('FONTSIZE', (0,0), (-1,-1), 8),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ('BACKGROUND', (0,0), (-1,0), colors.lightgrey),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.whitesmoke, colors.white]),
+    ]))
+    elementos.append(tabela_atualizacao)
+    elementos.append(Spacer(1, 1.0*cm))
+
+
+    # --- 6. NOTA METODOLÓGICA ---
+    # ... (restante do seu código)
     elementos.append(Paragraph("<b>NOTA METODOLÓGICA:</b>", estilo_normal))
     texto_nota = """
     1. O cálculo apura as diferenças remuneratórias decorrentes da aplicação incorreta do escalonamento vertical e progressão de níveis.<br/>
@@ -175,8 +279,10 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     
     # Anexos em nova página
     elementos.append(PageBreak())
-
-    # --- 6. ANEXO I: TABELA DO CORONEL ---
+    
+    # --- ANEXOS (7, 8, 9) ---
+    # ... (Código dos anexos I e II permanece o mesmo) ...
+    # --- 7. ANEXO I: TABELA DO CORONEL ---
     elementos.append(Paragraph("ANEXO I: HISTÓRICO DO SUBSÍDIO (CORONEL)", estilo_subtitulo))
     elementos.append(Paragraph("Base de cálculo para o escalonamento vertical.", estilo_nota))
     elementos.append(Spacer(1, 0.2*cm))
@@ -185,7 +291,7 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     linhas_lei = []
     
     for idx, row in df_tabela_lei.iterrows():
-        norma = row.get('Norma', 'LCE 514/2014')
+        norma = row.get('Norma', 'LCE 515/2014')
         linha = [
             formatar_data(row['Data_Inicio']),
             formatar_data(row['Data_Fim']),
@@ -206,7 +312,7 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     elementos.append(tabela_lei)
     elementos.append(Spacer(1, 1*cm))
 
-    # --- 7. ANEXO II: ESCALONAMENTO ---
+    # --- 8. ANEXO II: ESCALONAMENTO ---
     elementos.append(Paragraph("ANEXO II: TABELA DE ESCALONAMENTO", estilo_subtitulo))
     elementos.append(Spacer(1, 0.2*cm))
 
@@ -237,7 +343,7 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     elementos.append(tabela_esc)
     elementos.append(Spacer(1, 0.5*cm))
 
-    # --- 8. NOTA LEI 463/12 ---
+    # --- 9. NOTA LEI 463/12 ---
     nota_aspirante = """
     <b>NOTA LEGAL ESPECÍFICA (FORMAÇÃO):</b><br/>
     Os subsídios de <b>Aspirante a Oficial</b> e <b>Alunos do CFO (I, II e III)</b> foram calculados observando a equivalência fixada pela 
@@ -245,13 +351,7 @@ def gerar_pdf(df_final, dados_militar, df_tabela_lei, df_escalonamento, df_histo
     Subtenente e Sargentos conforme estipulado.
     """
     elementos.append(Paragraph(nota_aspirante, estilo_nota))
-    # --- 9. ASSINATURA ---
-    # REMOVIDA O CAMPO DE ASSINATURA
-    #elementos.append(Spacer(1, 2*cm))
-    #elementos.append(Paragraph("_" * 50, ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
-    #elementos.append(Paragraph("Responsável Técnico / Calculista", ParagraphStyle('Centro', parent=styles['Normal'], alignment=1)))
-    
+
     doc.build(elementos)
     buffer.seek(0)
-
     return buffer
