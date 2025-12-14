@@ -24,7 +24,7 @@ class CalculadoraMilitar:
             self.df_indices['Data'] = pd.to_datetime(self.df_indices['Data'], dayfirst=True, errors='coerce')
             
             # Limpeza Numérica Pesada (Remove %, R$, vírgulas)
-            cols_financeiras = ['IPCA', 'Selic', 'JurosPoupanca', 'FatorAcumulado'] 
+            cols_financeiras = ['CorrecaoMonetaria', 'Selic', 'JurosPoupanca', 'SelicAcumulada'] 
             for col in cols_financeiras:
                 if col in self.df_indices.columns:
                     self.df_indices[col] = self.df_indices[col].astype(str).str.replace('%', '', regex=False).str.replace(',', '.', regex=False)
@@ -35,7 +35,7 @@ class CalculadoraMilitar:
             # Captura Numerador IPCA (Nov/21) - Lógica que bateu com Excel
             try:
                 data_nov21 = pd.to_datetime('2021-11-01')
-                self.indice_ref_nov21 = self.df_indices.loc[self.df_indices['Data'] == data_nov21, 'FatorAcumulado'].values[0]
+                self.indice_ref_nov21 = self.df_indices.loc[self.df_indices['Data'] == data_nov21, 'CorrecaoMonetaria'].values[0]
             except:
                 self.indice_ref_nov21 = 1.0
 
@@ -105,28 +105,94 @@ class CalculadoraMilitar:
         todas_datas.sort()
         
         return pd.DataFrame({'Competencia': todas_datas})
+    # Adicione este método auxiliar à classe CalculadoraMilitar
 
-    def gerar_tabela_base(self):
+    def extrair_detalhes_laudo(self, df):
+        """
+        Extrai Nível e Tipo (Rubrica) com base na Competencia e Posto_Vigente, 
+        preparando as colunas para o PDF.
+        """
+        
+        def determinar_rubrica(row):
+            """ 355-Subsídio, 351-13º, 359-Férias """
+            if row['Competencia'].day == 13:
+                return 'Grat. Natalina'
+            elif row['Competencia'].day == 15:
+                return 'Férias'
+            return 'Subsídio'
+ 
+        def determinar_nivel(row):
+            posto = str(row['Posto_Vigente']).split('-')[-1].strip() # Pega só o posto se for 13º ou Férias
+            data_ref = row['Competencia'].replace(day=1)
+            
+            if "ASPIRANTE" in posto.upper() or "ALUNO CFO" in posto.upper(): 
+                # Se for ASP/Aluno, usamos a lógica do fator e mapeamos para Nível
+                fator = self.get_fator_nivel(posto, data_ref)
+                if fator >= (1.03 ** 2): return 'III'
+                elif fator >= 1.03: return 'II'
+                return 'I'
+            
+            # Para militares de carreira (Tempo de Serviço)
+            ultimo_dia = data_ref + relativedelta(day=31)
+            anos = relativedelta(ultimo_dia, self.data_ingresso).years
+            trienios = int(anos / 3)
+            
+            # Mapeamento Nível
+            if trienios >= 3: return 'IV' # 9+ anos
+            if trienios == 2: return 'III' # 6-8 anos
+            if trienios == 1: return 'II' # 3-5 anos
+            return 'I' # 0-2 anos
+
+        # 1. Cria a coluna 'Rubrica_Tipo' (Tipo)
+        df['Rubrica_Tipo'] = df.apply(determinar_rubrica, axis=1)
+
+        # 2. Cria a coluna 'Nivel'
+        df['Nivel'] = df.apply(determinar_nivel, axis=1)
+        
+        # 3. Renomeia Posto (Posto/Grad) e ajusta o nome no 13º/Férias
+        def formatar_posto_grad(posto_vigente):
+            posto_str = str(posto_vigente).strip()
+        
+            # 1. TRATAMENTO DE TRANSIÇÃO (Setas)
+            # Ex: "Aluno CFO 3 (24d) -> Aspirante (7d)"
+            if ' -> ' in posto_str:
+                return posto_str.replace(' -> ', ' / \n')
+            
+            # 2. TRATAMENTO DE RUBRICA (13º/Férias)
+            # Ex: "13º Salário - Aluno CFO 3"
+            if ' - ' in posto_str:
+            # Pega apenas o que vem depois do PRIMEIRO " - "
+            # O .split(' - ', 1)[-1] garante que só pegamos o último pedaço
+                return posto_str.split(' - ', 1)[-1].strip()
+
+            # 3. VALOR PADRÃO (Posto único)
+            # Ex: "Aluno CFO 3"
+            return posto_str 
+        df['Posto_Grad'] = df['Posto_Vigente'].apply(formatar_posto_grad)
+        return df
+
+    
+    #def gerar_tabela_base(self):
         # Gera timeline com meses normais E 13º
-        df = self.gerar_timeline()
+        #df = self.gerar_timeline()
         
         # O resto da lógica funciona igual, pois buscar_posto e buscar_valor
         # funcionam baseados em data <= data_atual, então dia 13 pega o posto de dez.
         
         # Lógica Pro Rata (Mantida)
-        resultado_nominal = df.apply(self.calcular_valor_nominal_com_prorata, axis=1)
-        df['Posto_Vigente'] = resultado_nominal[0]
-        df['Valor_Devido'] = resultado_nominal[1]
+        #resultado_nominal = df.apply(self.calcular_valor_nominal_com_prorata, axis=1)
+        #df['Posto_Vigente'] = resultado_nominal[0]
+        #df['Valor_Devido'] = resultado_nominal[1]
         
-        df['Norma_Legal'] = df['Competencia'].apply(self.buscar_norma_vigente)
+        #df['Norma_Legal'] = df['Competencia'].apply(self.buscar_norma_vigente)
         
         # Identificação visual do 13º
         # Se for dia 13, muda o nome do posto para "13º Salário - [Posto]"
-        mask_13 = df['Competencia'].dt.day == 13
-        df.loc[mask_13, 'Posto_Vigente'] = "13º Salário - " + df.loc[mask_13, 'Posto_Vigente']
+        #mask_13 = df['Competencia'].dt.day == 13
+        #df.loc[mask_13, 'Posto_Vigente'] = "13º Salário - " + df.loc[mask_13, 'Posto_Vigente']
         
-        df['Valor_Pago'] = 0.0 
-        return df
+        #df['Valor_Pago'] = 0.0 
+        #return df
 
 
     def buscar_posto_na_data(self, data_especifica):
@@ -309,6 +375,7 @@ class CalculadoraMilitar:
 
         return df_final
     # --- PROCESSAMENTO PRINCIPAL ---
+    # --- NOVO GERAR_TABELA_BASE COMPLETO ---
     def gerar_tabela_base(self):
         df = self.gerar_timeline()
         
@@ -320,6 +387,10 @@ class CalculadoraMilitar:
         df['Valor_Devido'] = resultado_nominal[1]
         
         df['Valor_Pago'] = 0.0 
+        
+        # 💡 CHAMA O NOVO MÉTODO AQUI:
+        df = self.extrair_detalhes_laudo(df)
+        
         return df
 
         # Passo 3: Pequeno Ajuste no `calcular_atualizacao` (Juros do 13º)
@@ -339,17 +410,20 @@ class CalculadoraMilitar:
 
         # Datas
         data_ref_ipca = data_competencia.replace(day=1)
-        data_inicio_juros = data_competencia + relativedelta(months=1)
+        data_base_para_juros = data_competencia.replace(day=1)
+        data_inicio_juros = data_base_para_juros + relativedelta(months=1)
         data_limite_fase1 = pd.to_datetime('2021-11-30')
 
         # 1. IPCA (Lê do CSV - Divisão Acumulada)
-        fator_ipca = 1.0
+        fator_ipca = 1.0 # Valor padrão (se a data for posterior ao limite)
+
         if data_ref_ipca <= data_limite_fase1:
-            try:
-                indice_data = self.df_indices.loc[self.df_indices['Data'] == data_ref_ipca, 'FatorAcumulado'].values[0]
-                if indice_data > 0:
-                    fator_ipca = self.indice_ref_nov21 / indice_data
-            except: fator_ipca = 1.0
+        # 1. Localiza o valor da CorrecaoMonetaria para a data específica
+            fator_ipca = self.df_indices.loc[self.df_indices['Data'] == data_ref_ipca,'CorrecaoMonetaria'].values[0]
+    
+    
+        # Se a condição for falsa (data > data_limite_fase1), fator_ipca permanece 1.0.
+        # A cláusula 'else' não é mais necessária, pois fator_ipca já é 1.0 por padrão.
 
         # 2. Juros (Soma Simples)
         indices_futuros_juros = self.df_indices[self.df_indices['Data'] >= data_inicio_juros]
