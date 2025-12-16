@@ -124,6 +124,7 @@ class CalculadoraMilitar:
         def determinar_nivel(row):
             posto = str(row['Posto_Vigente']).split('-')[-1].strip() # Pega só o posto se for 13º ou Férias
             data_ref = row['Competencia'].replace(day=1)
+            data_ingresso = row.get('data_ingresso', self.data_ingresso)
             
             if "ASPIRANTE" in posto.upper() or "ALUNO CFO" in posto.upper(): 
                 # Se for ASP/Aluno, usamos a lógica do fator e mapeamos para Nível
@@ -134,14 +135,13 @@ class CalculadoraMilitar:
             
             # Para militares de carreira (Tempo de Serviço)
             ultimo_dia = data_ref + relativedelta(day=31)
-            anos = relativedelta(ultimo_dia, self.data_ingresso).years
+            anos = relativedelta(ultimo_dia, data_ingresso).years
             trienios = int(anos / 3)
-            
+            niveis_romanos = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X']
             # Mapeamento Nível
-            if trienios >= 3: return 'IV' # 9+ anos
-            if trienios == 2: return 'III' # 6-8 anos
-            if trienios == 1: return 'II' # 3-5 anos
-            return 'I' # 0-2 anos
+            indice = min(trienios, len(niveis_romanos) - 1)
+            if indice < 0: indice = 0
+            return niveis_romanos[indice]
 
         # 1. Cria a coluna 'Rubrica_Tipo' (Tipo)
         df['Rubrica_Tipo'] = df.apply(determinar_rubrica, axis=1)
@@ -449,3 +449,4 @@ class CalculadoraMilitar:
         df_preenchido['Diferenca_Mensal'] = df_preenchido['Diferenca_Mensal'].apply(lambda x: max(0.0, x))
         financeiro = df_preenchido.apply(self.calcular_atualizacao, axis=1)
         return pd.concat([df_preenchido, financeiro], axis=1)
+
